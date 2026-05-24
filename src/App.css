@@ -176,7 +176,16 @@
   padding: 0 4px;
   height: 48px;
   justify-content: flex-start;
-  transition: background-color 0.2s;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+
+.sidebar-chat-item:hover {
+  opacity: 0.75;
+}
+
+.sidebar-chat-item.active {
+  opacity: 1;
 }
 
 .chat-item-avatar {
