@@ -3,6 +3,21 @@ import bcrypt from 'bcryptjs'
 import db from '../db'
 import { generateToken } from '../middleware/auth'
 
+function ensureOpusChat(userId: number) {
+  const opus = db.prepare('SELECT id FROM users WHERE email = ?').get('opus@ai.local') as any
+  if (!opus) return
+  const existing = db.prepare(`
+    SELECT 1 FROM chat_participants cp1
+    JOIN chat_participants cp2 ON cp2.chat_id = cp1.chat_id
+    WHERE cp1.user_id = ? AND cp2.user_id = ?
+  `).get(userId, opus.id)
+  if (!existing) {
+    const chat = db.prepare('INSERT INTO chats (name) VALUES (?)').run('Opus')
+    db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chat.lastInsertRowid, userId)
+    db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chat.lastInsertRowid, opus.id)
+  }
+}
+
 const router = Router()
 
 router.post('/register', (req: Request, res: Response) => {
@@ -25,11 +40,14 @@ router.post('/register', (req: Request, res: Response) => {
     'INSERT INTO users (name, surname, email, password, username) VALUES (?, ?, ?, ?, ?)'
   ).run(name, surname || '', email, hash, username)
 
-  const token = generateToken(result.lastInsertRowid as number)
+  const userId = result.lastInsertRowid as number
+  ensureOpusChat(userId)
+
+  const token = generateToken(userId)
   res.status(201).json({
     token,
     user: {
-      id: result.lastInsertRowid,
+      id: userId,
       name,
       surname: surname || '',
       email,
@@ -53,6 +71,8 @@ router.post('/login', (req: Request, res: Response) => {
     res.status(401).json({ error: 'Invalid email or password' })
     return
   }
+
+  ensureOpusChat(user.id)
 
   const token = generateToken(user.id)
   res.json({

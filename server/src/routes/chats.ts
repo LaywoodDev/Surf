@@ -2,6 +2,23 @@ import { Router, Response } from 'express'
 import db from '../db'
 import { authMiddleware, AuthRequest } from '../middleware/auth'
 
+const PROXYAPI_KEY = process.env.PROXYAPI_KEY || ''
+const PROXYAPI_BASE = 'https://api.proxyapi.ru/openai/v1'
+
+async function callAI(messages: { role: string; content: string }[]) {
+  const response = await fetch(`${PROXYAPI_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${PROXYAPI_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ model: 'gpt-4o', messages, temperature: 0.1 }),
+  })
+  if (!response.ok) throw new Error(`AI request failed: ${await response.text()}`)
+  const data = await response.json()
+  return data.choices[0].message.content
+}
+
 const router = Router()
 router.use(authMiddleware)
 

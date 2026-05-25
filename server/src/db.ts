@@ -51,4 +51,6 @@ db.exec(`
 try { db.exec(`ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''`) } catch {};
 try { db.exec(`ALTER TABLE users ADD COLUMN privacy TEXT DEFAULT '{"phone":"Everyone","email":"Everyone","bio":"Everyone"}'`) } catch {};
 
+
+
 export default db

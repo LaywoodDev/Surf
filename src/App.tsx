@@ -60,11 +60,16 @@ function App() {
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false)
 
   const [inputText, setInputText] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiConversation, setAiConversation] = useState<{ role: 'user' | 'ai'; text: string }[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<UserData[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const aiMessagesRef = useRef<HTMLDivElement>(null)
   const avatarRef = useRef<HTMLDivElement>(null)
   const avatarFileRef = useRef<HTMLInputElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const homeMounted = useRef(false)
   const [attachMenu, setAttachMenu] = useState<{ x: number; y: number; dir: 'up' | 'down' } | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: number } | null>(null)
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(null)
@@ -72,6 +77,7 @@ function App() {
   const [settingsSection, setSettingsSection] = useState<'general' | 'account' | 'privacy'>('general')
   const [editProfile, setEditProfile] = useState({ username: '', phone: '', bio: '' })
   const [contactProfile, setContactProfile] = useState<UserData | null>(null)
+  const [fullscreenImage, setFullscreenImage] = useState<string | null>(null)
   const [settings, setSettings] = useState({
     language: 'English',
     theme: 'Dark',
@@ -119,6 +125,27 @@ function App() {
     }
   }, [activeChatId])
 
+  const [firstHomeEntry, setFirstHomeEntry] = useState(true)
+
+  useEffect(() => {
+    if (firstHomeEntry) {
+      const t = setTimeout(() => setFirstHomeEntry(false), 600)
+      return () => clearTimeout(t)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (aiMessagesRef.current) {
+      aiMessagesRef.current.scrollTop = aiMessagesRef.current.scrollHeight
+    }
+  }, [aiConversation, aiLoading])
+
+  useEffect(() => {
+    if (activeTab === 'search') {
+      searchInputRef.current?.blur()
+    }
+  }, [activeTab])
+
   useEffect(() => {
     if (activeTab === 'search' && searchQuery.trim()) {
       const t = setTimeout(() => {
@@ -149,6 +176,25 @@ function App() {
     setChatInputTexts(prev => ({ ...prev, [chatId]: value }))
   }
 
+  const handleAiSend = async () => {
+    const text = inputText.trim()
+    if (!text || aiLoading) return
+    setInputText('')
+    setAiConversation(prev => [...prev, { role: 'user', text }])
+    setAiLoading(true)
+    try {
+      const result = await api('/ai/process', {
+        method: 'POST',
+        body: JSON.stringify({ text, history: aiConversation })
+      })
+      setAiConversation(prev => [...prev, { role: 'ai', text: result.response }])
+    } catch {
+      setAiConversation(prev => [...prev, { role: 'ai', text: 'Произошла ошибка. Попробуйте ещё раз.' }])
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
   const handleContextMenu = (e: React.MouseEvent, messageId: number) => {
     e.preventDefault()
     if (contextMenu) { closeContextMenu(); return }
@@ -156,6 +202,20 @@ function App() {
   }
 
   const closeContextMenu = () => setContextMenu(null)
+
+  const copyMessage = () => {
+    if (!contextMenu) return
+    const msg = messages.find(m => m.id === contextMenu.messageId)
+    if (msg) navigator.clipboard.writeText(msg.text)
+    closeContextMenu()
+  }
+
+  const deleteMessage = () => {
+    if (!contextMenu) return
+    setMessages(prev => prev.filter(m => m.id !== contextMenu.messageId))
+    closeContextMenu()
+  }
+
   const closeAttachMenu = () => setAttachMenu(null)
   const closeProfileMenu = () => setProfileMenu(null)
   const closeSettingDropdown = () => setSettingDropdown(null)
@@ -206,6 +266,13 @@ function App() {
       document.removeEventListener('scroll', handleScroll, true)
     }
   }, [contextMenu, attachMenu, profileMenu, settingDropdown])
+
+  useEffect(() => {
+    if (!fullscreenImage) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreenImage(null) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [fullscreenImage])
 
   if (!isLoggedIn) {
     return (
@@ -314,10 +381,26 @@ function App() {
                 <g filter="url(#filter3_f_1173_79)"><circle cx="12.75" cy="-1.50001" r="9.74999" fill="#FA4442"/></g>
               </g>
               <defs>
-                <filter id="filter0_f_1173_79" x="6.15" y="-7.35" width="34.2" height="34.2"><feGaussianBlur stdDeviation="3.675"/></filter>
-                <filter id="filter1_f_1173_79" x="-6.6" y="-2.85" width="34.2" height="34.2"><feGaussianBlur stdDeviation="3.675"/></filter>
-                <filter id="filter2_f_1173_79" x="-18.6" y="-14.85" width="34.2" height="34.2"><feGaussianBlur stdDeviation="3.675"/></filter>
-                <filter id="filter3_f_1173_79" x="-4.35" y="-18.6" width="34.2" height="34.2"><feGaussianBlur stdDeviation="3.675"/></filter>
+                <filter id="filter0_f_1173_79" x="6.15" y="-7.35" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+                  <feFlood floodOpacity="0" result="BackgroundImageFix"/>
+                  <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+                  <feGaussianBlur stdDeviation="3.675" result="effect1_foregroundBlur_1173_79"/>
+                </filter>
+                <filter id="filter1_f_1173_79" x="-6.6" y="-2.85" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+                  <feFlood floodOpacity="0" result="BackgroundImageFix"/>
+                  <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+                  <feGaussianBlur stdDeviation="3.675" result="effect1_foregroundBlur_1173_79"/>
+                </filter>
+                <filter id="filter2_f_1173_79" x="-18.6" y="-14.85" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+                  <feFlood floodOpacity="0" result="BackgroundImageFix"/>
+                  <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+                  <feGaussianBlur stdDeviation="3.675" result="effect1_foregroundBlur_1173_79"/>
+                </filter>
+                <filter id="filter3_f_1173_79" x="-4.35" y="-18.6" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+                  <feFlood floodOpacity="0" result="BackgroundImageFix"/>
+                  <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+                  <feGaussianBlur stdDeviation="3.675" result="effect1_foregroundBlur_1173_79"/>
+                </filter>
                 <linearGradient id="paint0_linear_1173_79" x1="12" y1="0" x2="12" y2="13.347" gradientUnits="userSpaceOnUse">
                   <stop stopColor="#E20736"/><stop offset="1" stopColor="#BEE000"/>
                 </linearGradient>
@@ -400,29 +483,54 @@ function App() {
         )}
 
         {activeTab === 'home' ? (
-          <div className="landing-content">
-            <h1 className="landing-header">Let's text someone</h1>
-            <div className="chat-input-container">
-              <div className="chat-input-wrapper">
-                <button className="input-icon-btn" title="Add file" onClick={(e) => {
-                  e.stopPropagation()
-                  if (attachMenu) { closeAttachMenu(); return }
-                  const rect = e.currentTarget.getBoundingClientRect()
-                  setAttachMenu({ x: rect.left, y: rect.bottom + 4, dir: 'down' })
-                }}>
-                  <Plus size={18} />
-                </button>
-                <input type="text" className="chat-input" placeholder="Ask Opus" value={inputText} onChange={(e) => setInputText(e.target.value)} />
-                <button className={`send-btn${inputText.trim() ? ' active' : ''}`} title="Send"><ArrowUp size={18} /></button>
+          <div className={`chat-thread-container ai-chat ${aiConversation.length > 0 ? 'has-messages' : ''} ${firstHomeEntry ? 'home-entry' : ''}`}>
+            {aiConversation.length === 0 ? (
+              <div className="chat-thread-messages">
+                <div className="ai-welcome">
+                  <h1 className="landing-header">Let's text someone</h1>
+                  <div className="chat-input-wrapper">
+                    <input type="text" className="chat-input" placeholder="Ask Opus" value={inputText}
+                      onChange={(e) => setInputText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleAiSend() }} />
+                    <button className={`send-btn${inputText.trim() ? ' active' : ''}`} title="Send" onClick={handleAiSend}><ArrowUp size={18} /></button>
+                  </div>
+                </div>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="chat-thread-messages" ref={aiMessagesRef}>
+                  {aiConversation.map((msg, i) => (
+                    <div key={i} className={`message-row ${msg.role === 'user' ? 'sender-me' : 'sender-them'}`}>
+                      <div className="message-bubble">
+                        <div className="message-text">{msg.text}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {aiLoading && (
+                    <div className="message-row sender-them">
+                      <div className="message-bubble ai-typing-bubble">
+                        <span className="ai-typing">...</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="chat-thread-input-container">
+                  <div className="chat-input-wrapper">
+                    <input type="text" className="chat-input" placeholder="Ask Opus" value={inputText}
+                      onChange={(e) => setInputText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleAiSend() }} />
+                    <button className={`send-btn${inputText.trim() ? ' active' : ''}`} title="Send" onClick={handleAiSend}><ArrowUp size={18} /></button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         ) : activeTab === 'search' ? (
           <div className="search-content">
             <div className="search-bar-container">
               <div className="search-bar-wrapper">
                 <Search size={18} className="search-bar-icon" />
-                <input type="text" className="search-bar-input" placeholder="Search users..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} autoFocus />
+                <input ref={searchInputRef} type="text" className="search-bar-input" placeholder="Search users..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
               </div>
             </div>
             <div className="recent-section">
@@ -511,9 +619,10 @@ function App() {
         ) : activeTab === 'profile' && activeChatId === null ? (
           <div className="profile-container">
             <div className="profile-top">
-              <div className="profile-avatar-large" style={user?.avatar ? { backgroundImage: `url(${user.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : { backgroundColor: 'var(--accent-color)' }}>
+              <div className="profile-avatar-large" style={user?.avatar ? { backgroundImage: `url(${user.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent', cursor: 'pointer' } : { backgroundColor: 'var(--accent-color)' }}
+                onClick={() => user?.avatar && setFullscreenImage(user.avatar)}>
                 {!user?.avatar && <User size={36} strokeWidth={1.5} />}
-                <span className="online-dot online-dot-lg online" />
+                {user?.avatar && <span className="online-dot online-dot-lg online" />}
               </div>
               <div className="profile-info-header">
                 <div className="profile-name">{user?.name || 'User'}</div>
@@ -592,7 +701,8 @@ function App() {
         ) : activeTab === 'profile' && activeChat ? (
           <div className="profile-container">
             <div className="profile-top">
-              <div className="profile-avatar-large" style={contactProfile?.avatar ? { backgroundImage: `url(${contactProfile.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+              <div className="profile-avatar-large" style={contactProfile?.avatar ? { backgroundImage: `url(${contactProfile.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent', cursor: 'pointer' } : {}}
+                onClick={() => contactProfile?.avatar && setFullscreenImage(contactProfile.avatar)}>
                 {!contactProfile?.avatar && <User size={36} strokeWidth={1.5} />}
                 <span className="online-dot online-dot-lg" />
               </div>
@@ -714,6 +824,12 @@ function App() {
             {(settings as any)[settingDropdown.key] === option && <span style={{ marginLeft: 'auto', color: 'var(--accent-color)' }}>✓</span>}
           </button>
         ))}
+      </div>
+    )}
+
+    {fullscreenImage && (
+      <div className="fullscreen-overlay" onClick={() => setFullscreenImage(null)}>
+        <img src={fullscreenImage} className="fullscreen-image" alt="Fullscreen" />
       </div>
     )}
   </>

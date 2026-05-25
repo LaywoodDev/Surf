@@ -324,18 +324,32 @@
 
 
 
-/* Landing screen state */
-.landing-content {
+.home-entry {
+  animation: homeEntry 1.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes homeEntry {
+  from {
+    opacity: 0;
+    transform: translateY(40px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* AI Chat Welcome */
+.ai-welcome {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 32px; /* Premium spacing between header and input box */
+  justify-content: center;
+  flex-grow: 1;
+  gap: 32px;
   width: 100%;
   max-width: 580px;
-  padding: 0 24px;
-  z-index: 2;
-  margin-top: auto;
-  margin-bottom: auto; /* Vertically center landing screen */
+  margin: 0 auto;
 }
 
 .landing-header {
@@ -347,9 +361,19 @@
   letter-spacing: -0.5px;
 }
 
-/* Sticky Input Box */
-.chat-input-container {
-  width: 100%;
+.ai-typing {
+  animation: aiPulse 1.5s ease-in-out infinite;
+  font-size: 18px;
+  letter-spacing: 2px;
+}
+
+@keyframes aiPulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.ai-typing-bubble {
+  min-width: 50px;
 }
 
 .chat-input-wrapper {
@@ -362,6 +386,7 @@
   padding: 0 8px 0 20px;
   transition: border-color 0.25s;
   height: 56px; /* High-fidelity spacious height */
+  width: 100%;
 }
 
 
@@ -464,12 +489,17 @@
   height: 56px; /* Consistent height with chat input */
 }
 
-.search-bar-wrapper:focus-within {
-  border-color: rgba(238, 164, 127, 0.4);
+.search-bar-wrapper {
+  outline: none;
+}
+
+.search-bar-input:focus {
+  outline: none;
+  box-shadow: none;
 }
 
 .search-bar-wrapper:focus-within {
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(238, 164, 127, 0.4);
 }
 
 .search-bar-icon {
@@ -650,6 +680,8 @@
   overflow: hidden;
   padding: 0 24px;
 }
+
+
 
 .chat-thread-header {
   display: flex;
@@ -1486,5 +1518,33 @@
 
 .auth-link:hover {
   text-decoration: underline;
+}
+
+/* Fullscreen Image Overlay */
+.fullscreen-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  cursor: pointer;
+  animation: fadeIn 0.2s ease;
+}
+
+.fullscreen-image {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 

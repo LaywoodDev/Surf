@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import multer from 'multer'
@@ -6,6 +7,7 @@ import { fileURLToPath } from 'url'
 import authRoutes from './routes/auth'
 import chatsRoutes from './routes/chats'
 import usersRoutes from './routes/users'
+import aiRoutes from './routes/ai'
 import { authMiddleware } from './middleware/auth'
 import db from './db'
 
@@ -41,6 +43,7 @@ app.post('/api/upload/avatar', authMiddleware, upload.single('avatar'), (req: an
 app.use('/api/auth', authRoutes)
 app.use('/api/chats', chatsRoutes)
 app.use('/api/users', usersRoutes)
+app.use('/api/ai', aiRoutes)
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`)
