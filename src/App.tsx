@@ -69,7 +69,6 @@ function App() {
   const avatarRef = useRef<HTMLDivElement>(null)
   const avatarFileRef = useRef<HTMLInputElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
-  const homeMounted = useRef(false)
   const [attachMenu, setAttachMenu] = useState<{ x: number; y: number; dir: 'up' | 'down' } | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: number } | null>(null)
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(null)
@@ -227,6 +226,8 @@ function App() {
     emailPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     bioPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     autoDownload: ['Wi-Fi only', 'Always', 'Never'],
+    theme: ['Dark', 'Light'],
+    language: ['English', 'Russian', 'Spanish'],
   }
 
   const cycleSetting = (key: keyof typeof settings, options: string[]) => {
@@ -630,18 +631,9 @@ function App() {
             </div>
             <div className="profile-content">
               <div className="profile-section">
-                <h3 className="profile-section-title">Account</h3>
                 <div className="profile-card">
-                  <div className="profile-info-row">
-                    <span className="profile-info-label">Username</span>
-                    <span className="profile-info-value">{user?.username || ''}</span>
-                  </div>
-                  {user?.phone && <div className="profile-info-row">
-                    <span className="profile-info-label">Phone</span>
-                    <span className="profile-info-value">{user.phone}</span>
-                  </div>}
                   <div className="profile-info-row" onClick={() => { setActiveTab('edit-profile'); setEditProfile({ username: user?.username || '', phone: user?.phone || '', bio: user?.bio || '' }) }}
-                    style={{ cursor: 'pointer', borderTop: '1px solid rgba(255,255,255,0.03)' }}>
+                    style={{ cursor: 'pointer' }}>
                     <span className="profile-info-label" style={{ color: 'var(--accent-color)' }}>Edit profile</span>
                     <Pencil size={14} style={{ color: 'var(--accent-color)' }} />
                   </div>
@@ -741,10 +733,10 @@ function App() {
                   <div className="profile-section">
                     <h3 className="profile-section-title">Appearance</h3>
                     <div className="profile-card">
-                      <div className="profile-info-row" onClick={() => cycleSetting('language', ['English', 'Russian', 'Spanish'])} style={{ cursor: 'pointer' }}>
+                      <div className="profile-info-row" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'language', x: r.left, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
                         <span className="profile-info-label">Language</span><span className="profile-info-value">{settings.language}</span>
                       </div>
-                      <div className="profile-info-row" onClick={() => cycleSetting('theme', ['Dark', 'Light'])} style={{ cursor: 'pointer' }}>
+                      <div className="profile-info-row" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'theme', x: r.left, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
                         <span className="profile-info-label">Theme</span><span className="profile-info-value">{settings.theme}</span>
                       </div>
                     </div>
@@ -821,7 +813,7 @@ function App() {
             onClick={() => selectSetting(settingDropdown.key, option)}
           >
             {option}
-            {(settings as any)[settingDropdown.key] === option && <span style={{ marginLeft: 'auto', color: 'var(--accent-color)' }}>✓</span>}
+            {(settings as any)[settingDropdown.key] === option && <span style={{ marginLeft: 'auto', color: '#ffffff' }}>✓</span>}
           </button>
         ))}
       </div>
