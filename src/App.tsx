@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Search, ArrowUp, User, Copy, Trash2, Image, File, Camera, Settings, LogOut, Shield, Pencil, Phone, MoreVertical } from 'lucide-react'
+import { Plus, Search, ArrowUp, User, Copy, Trash2, Image, File, Camera, Settings, LogOut, Shield, Pencil, Phone, MoreVertical, Pin, Folder } from 'lucide-react'
 import './App.css'
 
 interface Chat {
@@ -7,6 +7,15 @@ interface Chat {
   name: string
   lastMessage: string
   time: string
+  pinned?: boolean
+}
+
+interface Folder {
+  id: number
+  name: string
+  icon: string
+  sortOrder: number
+  chats: number[]
 }
 
 interface Message {
@@ -71,11 +80,16 @@ function App() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const [attachMenu, setAttachMenu] = useState<{ x: number; y: number; dir: 'up' | 'down' } | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: number } | null>(null)
+  const [chatContextMenu, setChatContextMenu] = useState<{ x: number; y: number; chatId: number } | null>(null)
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(null)
   const [settingDropdown, setSettingDropdown] = useState<{ key: string; x: number; y: number } | null>(null)
   const [settingsSection, setSettingsSection] = useState<'general' | 'account' | 'privacy'>('general')
   const [editProfile, setEditProfile] = useState({ username: '', phone: '', bio: '' })
   const [contactProfile, setContactProfile] = useState<UserData | null>(null)
+  const [folders, setFolders] = useState<Folder[]>([])
+  const [activeFolderId, setActiveFolderId] = useState<number | null>(null)
+  const [folderDropdown, setFolderDropdown] = useState<{ chatId: number; x: number; y: number } | null>(null)
+  const [folderContextMenu, setFolderContextMenu] = useState<{ x: number; y: number; folderId: number } | null>(null)
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null)
   const [settings, setSettings] = useState({
     language: 'English',
@@ -114,6 +128,7 @@ function App() {
   useEffect(() => {
     if (isLoggedIn) {
       api('/chats').then(setChats)
+      api('/folders').then(setFolders)
     }
   }, [isLoggedIn])
 
@@ -215,8 +230,62 @@ function App() {
     closeContextMenu()
   }
 
+  const deleteChat = () => {
+    if (!chatContextMenu) return
+    api(`/chats/${chatContextMenu.chatId}`, { method: 'DELETE' }).then(() => {
+      setChats(prev => prev.filter(c => c.id !== chatContextMenu.chatId))
+      setChatContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
+  const togglePinChat = (chatId: number) => {
+    const chat = chats.find(c => c.id === chatId)
+    if (!chat) return
+    const newPinned = !chat.pinned
+    api(`/chats/${chatId}/pin`, { method: 'PUT', body: JSON.stringify({ pinned: newPinned }) }).then(() => {
+      setChats(prev => prev.map(c => c.id === chatId ? { ...c, pinned: newPinned } : c).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)))
+      setChatContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
+  const addChatToFolder = (chatId: number, folderId: number) => {
+    api(`/folders/${folderId}/chats/${chatId}`, { method: 'POST' }).then(() => {
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, chats: [...f.chats, chatId] } : f))
+      setFolderDropdown(null)
+      setChatContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
+  const createFolder = (name: string) => {
+    api('/folders', { method: 'POST', body: JSON.stringify({ name }) }).then((folder: Folder) => {
+      setFolders(prev => [...prev, folder])
+    }).catch(err => alert(err.message))
+  }
+
+  const renameFolder = (folderId: number) => {
+    const folder = folders.find(f => f.id === folderId)
+    const name = prompt('Rename folder', folder?.name || '')
+    if (!name?.trim()) return
+    api(`/folders/${folderId}`, { method: 'PUT', body: JSON.stringify({ name: name.trim() }) }).then(() => {
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name: name.trim() } : f))
+      setFolderContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
+  const deleteFolder = (folderId: number) => {
+    if (!confirm('Delete this folder?')) return
+    api(`/folders/${folderId}`, { method: 'DELETE' }).then(() => {
+      setFolders(prev => prev.filter(f => f.id !== folderId))
+      if (activeFolderId === folderId) setActiveFolderId(null)
+      setFolderContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
   const closeAttachMenu = () => setAttachMenu(null)
   const closeProfileMenu = () => setProfileMenu(null)
+  const closeChatContextMenu = () => setChatContextMenu(null)
+  const closeFolderDropdown = () => setFolderDropdown(null)
+  const closeFolderContextMenu = () => setFolderContextMenu(null)
   const closeSettingDropdown = () => setSettingDropdown(null)
 
   const settingOptions: Record<string, string[]> = {
@@ -226,7 +295,6 @@ function App() {
     emailPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     bioPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     autoDownload: ['Wi-Fi only', 'Always', 'Never'],
-    theme: ['Dark', 'Light'],
     language: ['English', 'Russian', 'Spanish'],
   }
 
@@ -256,9 +324,9 @@ function App() {
   }
 
   useEffect(() => {
-    const handleClick = () => { closeContextMenu(); closeAttachMenu(); closeProfileMenu(); closeSettingDropdown() }
-    const handleScroll = () => { closeContextMenu(); closeAttachMenu(); closeProfileMenu(); closeSettingDropdown() }
-    if (contextMenu || attachMenu || profileMenu || settingDropdown) {
+    const handleClick = () => { closeContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeSettingDropdown() }
+    const handleScroll = () => { closeContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeSettingDropdown() }
+    if (contextMenu || attachMenu || profileMenu || chatContextMenu || folderDropdown || folderContextMenu || settingDropdown) {
       document.addEventListener('click', handleClick)
       document.addEventListener('scroll', handleScroll, true)
     }
@@ -422,11 +490,35 @@ function App() {
             </button>
           </nav>
 
+          {folders.length > 0 && (
+            <div className="sidebar-folder-list">
+              <button className={`sidebar-folder-btn ${activeFolderId === null ? 'active' : ''}`} onClick={() => setActiveFolderId(null)}>All</button>
+              {folders.map(folder => (
+                <button key={folder.id} className={`sidebar-folder-btn ${activeFolderId === folder.id ? 'active' : ''}`}
+                  onClick={() => setActiveFolderId(folder.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setFolderContextMenu({ x: e.clientX, y: e.clientY, folderId: folder.id })
+                  }}
+                >
+                  {folder.name}
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="sidebar-chat-list">
-            {chats.map(chat => (
+            {(activeFolderId
+              ? chats.filter(c => folders.find(f => f.id === activeFolderId)?.chats.includes(c.id))
+              : chats
+            ).map(chat => (
               <div key={chat.id}
                 className={`sidebar-chat-item ${activeTab === 'chat' && activeChatId === chat.id ? 'active' : ''}`}
                 onClick={(e) => { e.stopPropagation(); setActiveChatId(chat.id); setActiveTab('chat') }}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  setChatContextMenu({ x: e.clientX, y: e.clientY, chatId: chat.id })
+                }}
                 title={chat.name}
               >
                 <div className="chat-item-avatar"><User size={18} strokeWidth={1.5} /></div>
@@ -434,6 +526,7 @@ function App() {
                   <span className="chat-item-name">{chat.name}</span>
                   <span className="chat-item-message">{chat.lastMessage}</span>
                 </div>
+                {chat.pinned && <div className="chat-item-pin" />}
               </div>
             ))}
           </div>
@@ -596,6 +689,43 @@ function App() {
               </div>
             )}
 
+            {chatContextMenu && (
+              <div className="context-menu" style={{ left: chatContextMenu.x, top: chatContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+                <button className="context-menu-item" onClick={() => chatContextMenu && togglePinChat(chatContextMenu.chatId)}>
+                  <Pin size={14} /><span>{chats.find(c => c.id === chatContextMenu.chatId)?.pinned ? 'Unpin' : 'Pin'}</span>
+                </button>
+                <button className="context-menu-item" onClick={() => chatContextMenu && setFolderDropdown({ chatId: chatContextMenu.chatId, x: chatContextMenu.x, y: chatContextMenu.y + 40 })}>
+                  <Folder size={14} /><span>Folder</span>
+                </button>
+                <button className="context-menu-item context-menu-item-danger" onClick={deleteChat}><Trash2 size={14} /><span>Delete chat</span></button>
+              </div>
+            )}
+
+            {folderDropdown && (
+              <div className="context-menu" style={{ left: folderDropdown.x, top: folderDropdown.y }} onClick={(e) => e.stopPropagation()}>
+                {folders.map(folder => (
+                  <button key={folder.id} className="context-menu-item" onClick={() => addChatToFolder(folderDropdown.chatId, folder.id)}>
+                    <span>{folder.name}</span>
+                    {folder.chats.includes(folderDropdown.chatId) && <span style={{ marginLeft: 'auto', color: '#13B962' }}>✓</span>}
+                  </button>
+                ))}
+                <button className="context-menu-item" onClick={() => { const name = prompt('Folder name'); if (name) createFolder(name) }}>
+                  <span>+ New folder</span>
+                </button>
+              </div>
+            )}
+
+            {folderContextMenu && (
+              <div className="context-menu" style={{ left: folderContextMenu.x, top: folderContextMenu.y }} onClick={(e) => e.stopPropagation()}>
+                <button className="context-menu-item" onClick={() => folderContextMenu && renameFolder(folderContextMenu.folderId)}>
+                  <Pencil size={14} /><span>Rename</span>
+                </button>
+                <button className="context-menu-item context-menu-item-danger" onClick={() => folderContextMenu && deleteFolder(folderContextMenu.folderId)}>
+                  <Trash2 size={14} /><span>Delete</span>
+                </button>
+              </div>
+            )}
+
             <div className="chat-thread-input-container">
               <div className="chat-input-wrapper">
                 <button className="input-icon-btn" title="Add file" onClick={(e) => {
@@ -735,9 +865,6 @@ function App() {
                     <div className="profile-card">
                       <div className="profile-info-row" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'language', x: r.left, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
                         <span className="profile-info-label">Language</span><span className="profile-info-value">{settings.language}</span>
-                      </div>
-                      <div className="profile-info-row" onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'theme', x: r.left, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
-                        <span className="profile-info-label">Theme</span><span className="profile-info-value">{settings.theme}</span>
                       </div>
                     </div>
                   </div>

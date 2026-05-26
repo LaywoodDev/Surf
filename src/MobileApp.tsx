@@ -3,8 +3,9 @@ import {
   MessageSquare, User, Plus, Search, ArrowUp,
   Copy, Trash2, Settings, Pencil, Phone,
   ChevronLeft, MoreVertical, Camera, Image, File, X,
-  ChevronRight, Mail, AtSign, Smartphone,
-  Globe, Palette, Eye, Volume2, HardDrive, Download, AlignLeft, Clock
+  ChevronRight, Mail, AtSign,
+  Globe, Eye, Volume2, HardDrive, Download, AlignLeft, Clock,
+  Pin, Folder
 } from 'lucide-react'
 import './MobileApp.css'
 
@@ -13,6 +14,15 @@ interface Chat {
   name: string
   lastMessage: string
   time: string
+  pinned?: boolean
+}
+
+interface Folder {
+  id: number
+  name: string
+  icon: string
+  sortOrder: number
+  chats: number[]
 }
 
 interface Message {
@@ -77,6 +87,10 @@ function MobileApp() {
   const [messages, setMessages] = useState<Message[]>([])
   const [chatInputTexts, setChatInputTexts] = useState<Record<number, string>>({})
   const [contactProfile, setContactProfile] = useState<UserData | null>(null)
+  const [folders, setFolders] = useState<Folder[]>([])
+  const [activeFolderId, setActiveFolderId] = useState<number | null>(null)
+  const [folderSheet, setFolderSheet] = useState<{ chatId: number } | null>(null)
+  const [folderContextMenu, setFolderContextMenu] = useState<{ folderId: number } | null>(null)
 
   const [inputText, setInputText] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
@@ -84,6 +98,7 @@ function MobileApp() {
 
   const handleRefresh = () => {
     api('/chats').then(setChats)
+    api('/folders').then(setFolders)
     api('/users/me').then(u => {
       setUser(u)
       setEditProfile({ username: u.username || '', phone: u.phone || '', bio: u.bio || '' })
@@ -110,6 +125,7 @@ function MobileApp() {
 
   const [attachMenu, setAttachMenu] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ messageId: number } | null>(null)
+  const [chatContextMenu, setChatContextMenu] = useState<{ chatId: number } | null>(null)
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null)
   const [closingThread, setClosingThread] = useState(false)
   const [closingContact, setClosingContact] = useState(false)
@@ -121,6 +137,9 @@ function MobileApp() {
     setTimeout(() => {
       setAttachMenu(false)
       setContextMenu(null)
+      setChatContextMenu(null)
+      setFolderSheet(null)
+      setFolderContextMenu(null)
       setOptionPicker(null)
       setClosingSheet(null)
     }, 200)
@@ -129,6 +148,9 @@ function MobileApp() {
   const closeSheetImmediate = () => {
     setAttachMenu(false)
     setContextMenu(null)
+    setChatContextMenu(null)
+    setFolderSheet(null)
+    setFolderContextMenu(null)
     setOptionPicker(null)
     setClosingSheet(null)
   }
@@ -138,6 +160,8 @@ function MobileApp() {
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0 })
   const touchDrag = useRef<{ startX: number; startTab: string } | null>(null)
+  const chatLongPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const folderLongPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const tabKeys = ['chats', 'opus', 'profile'] as const
 
@@ -261,6 +285,7 @@ function MobileApp() {
   useEffect(() => {
     if (isLoggedIn) {
       api('/chats').then(setChats)
+      api('/folders').then(setFolders)
     }
   }, [isLoggedIn])
 
@@ -388,6 +413,65 @@ function MobileApp() {
     setContextMenu(null)
   }
 
+  const handleChatLongPress = (chatId: number) => {
+    setChatContextMenu({ chatId })
+  }
+
+  const handleFolderLongPress = (folderId: number) => {
+    setFolderContextMenu({ folderId })
+  }
+
+  const deleteChat = () => {
+    if (!chatContextMenu) return
+    api(`/chats/${chatContextMenu.chatId}`, { method: 'DELETE' }).then(() => {
+      setChats(prev => prev.filter(c => c.id !== chatContextMenu.chatId))
+      setChatContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
+  const togglePinChat = (chatId: number) => {
+    const chat = chats.find(c => c.id === chatId)
+    if (!chat) return
+    const newPinned = !chat.pinned
+    api(`/chats/${chatId}/pin`, { method: 'PUT', body: JSON.stringify({ pinned: newPinned }) }).then(() => {
+      setChats(prev => prev.map(c => c.id === chatId ? { ...c, pinned: newPinned } : c).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)))
+      setChatContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
+  const addChatToFolder = (chatId: number, folderId: number) => {
+    api(`/folders/${folderId}/chats/${chatId}`, { method: 'POST' }).then(() => {
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, chats: [...f.chats, chatId] } : f))
+      setFolderSheet(null)
+      setChatContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
+  const createFolder = (name: string) => {
+    api('/folders', { method: 'POST', body: JSON.stringify({ name }) }).then((folder: Folder) => {
+      setFolders(prev => [...prev, folder])
+    }).catch(err => alert(err.message))
+  }
+
+  const renameFolder = (folderId: number) => {
+    const folder = folders.find(f => f.id === folderId)
+    const name = prompt('Rename folder', folder?.name || '')
+    if (!name?.trim()) return
+    api(`/folders/${folderId}`, { method: 'PUT', body: JSON.stringify({ name: name.trim() }) }).then(() => {
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name: name.trim() } : f))
+      setFolderContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
+  const deleteFolder = (folderId: number) => {
+    if (!confirm('Delete this folder?')) return
+    api(`/folders/${folderId}`, { method: 'DELETE' }).then(() => {
+      setFolders(prev => prev.filter(f => f.id !== folderId))
+      if (activeFolderId === folderId) setActiveFolderId(null)
+      setFolderContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+
   const settingOptions: Record<string, string[]> = {
     lastSeen: ['Everyone', 'My Contacts', 'Nobody'],
     profilePhoto: ['Everyone', 'My Contacts', 'Nobody'],
@@ -395,7 +479,6 @@ function MobileApp() {
     emailPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     bioPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     autoDownload: ['Wi-Fi only', 'Always', 'Never'],
-    theme: ['Dark', 'Light'],
     language: ['English', 'Russian', 'Spanish'],
   }
 
@@ -576,25 +659,67 @@ function MobileApp() {
                 )}
               </div>
             ) : (
-              <div className="mobile-chat-list">
-                {chats.length === 0 ? (
-                  <div className="mobile-chats-empty">
-                    <div className="mobile-chats-empty-text">No chats yet</div>
-                    <div className="mobile-chats-empty-hint">Search users to start chatting</div>
+              <>
+                {folders.length > 0 && (
+                  <div className="mobile-folder-bar">
+                    <button className={`mobile-folder-pill ${activeFolderId === null ? 'active' : ''}`} onClick={() => setActiveFolderId(null)}>All</button>
+                    {folders.map(folder => (
+                      <button key={folder.id} className={`mobile-folder-pill ${activeFolderId === folder.id ? 'active' : ''}`}
+                        onClick={() => setActiveFolderId(folder.id)}
+                        onTouchStart={() => {
+                          folderLongPressTimer.current = setTimeout(() => handleFolderLongPress(folder.id), 500)
+                        }}
+                        onTouchEnd={() => {
+                          if (folderLongPressTimer.current) { clearTimeout(folderLongPressTimer.current); folderLongPressTimer.current = null }
+                        }}
+                        onTouchMove={() => {
+                          if (folderLongPressTimer.current) { clearTimeout(folderLongPressTimer.current); folderLongPressTimer.current = null }
+                        }}
+                        onContextMenu={(e) => { e.preventDefault(); handleFolderLongPress(folder.id) }}
+                      >
+                        {folder.name}
+                      </button>
+                    ))}
                   </div>
-                ) : (
-                  chats.map(chat => (
-                    <div key={chat.id} className="mobile-chat-item" onClick={() => handleOpenChat(chat.id)}>
-                      <div className="mobile-chat-avatar"><User size={20} strokeWidth={1.5} /></div>
-                      <div className="mobile-chat-info">
-                        <div className="mobile-chat-name">{chat.name}</div>
-                        <div className="mobile-chat-preview">{chat.lastMessage}</div>
-                      </div>
-                      <div className="mobile-chat-time">{chat.time}</div>
-                    </div>
-                  ))
                 )}
-              </div>
+                <div className="mobile-chat-list">
+                  {(() => {
+                    const displayChats = activeFolderId
+                      ? chats.filter(c => folders.find(f => f.id === activeFolderId)?.chats.includes(c.id))
+                      : chats
+                    if (displayChats.length === 0) {
+                      return (
+                        <div className="mobile-chats-empty">
+                          <div className="mobile-chats-empty-text">No chats</div>
+                        </div>
+                      )
+                    }
+                    return displayChats.map(chat => (
+                      <div key={chat.id} className="mobile-chat-item"
+                        onClick={() => handleOpenChat(chat.id)}
+                        onTouchStart={() => {
+                          chatLongPressTimer.current = setTimeout(() => handleChatLongPress(chat.id), 500)
+                        }}
+                        onTouchEnd={() => {
+                          if (chatLongPressTimer.current) { clearTimeout(chatLongPressTimer.current); chatLongPressTimer.current = null }
+                        }}
+                        onTouchMove={() => {
+                          if (chatLongPressTimer.current) { clearTimeout(chatLongPressTimer.current); chatLongPressTimer.current = null }
+                        }}
+                        onContextMenu={(e) => { e.preventDefault(); handleChatLongPress(chat.id) }}
+                      >
+                        <div className="mobile-chat-avatar"><User size={20} strokeWidth={1.5} /></div>
+                        <div className="mobile-chat-info">
+                          <div className="mobile-chat-name">{chat.name}</div>
+                          <div className="mobile-chat-preview">{chat.lastMessage}</div>
+                        </div>
+                        <div className="mobile-chat-time">{chat.time}</div>
+                        {chat.pinned && <div className="mobile-chat-pin" />}
+                      </div>
+                    ))
+                  })()}
+                </div>
+              </>
             )}
           </div>
         )}
@@ -863,14 +988,6 @@ function MobileApp() {
                     <span className="mobile-settings-value">{settings.language}</span>
                     <ChevronRight size={16} className="mobile-settings-chevron" />
                   </div>
-                  <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('theme')}>
-                    <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#FA4442' }}>
-                      <Palette size={18} />
-                    </div>
-                    <span className="mobile-settings-label">Theme</span>
-                    <span className="mobile-settings-value">{settings.theme}</span>
-                    <ChevronRight size={16} className="mobile-settings-chevron" />
-                  </div>
                 </div>
               </div>
 
@@ -1050,6 +1167,68 @@ function MobileApp() {
             <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { deleteMessage(); closeSheetImmediate() }}>
               <Trash2 size={18} /><span>Delete</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ===== BOTTOM SHEET: Chat Actions ===== */}
+      {(chatContextMenu || closingSheet === 'chat') && (
+        <div className={`mobile-sheet-overlay${closingSheet === 'chat' ? ' closing' : ''}`} onClick={() => closeSheet('chat')}>
+          <div className={`mobile-sheet${closingSheet === 'chat' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            {chatContextMenu && (
+              <>
+                <button className="mobile-sheet-item" onClick={() => { togglePinChat(chatContextMenu.chatId); closeSheetImmediate() }}>
+                  <Pin size={18} /><span>{chats.find(c => c.id === chatContextMenu.chatId)?.pinned ? 'Unpin' : 'Pin'}</span>
+                </button>
+                <button className="mobile-sheet-item" onClick={() => { setFolderSheet({ chatId: chatContextMenu.chatId }); setChatContextMenu(null); }}>
+                  <Folder size={18} /><span>Folder</span>
+                </button>
+                <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { deleteChat(); closeSheetImmediate() }}>
+                  <Trash2 size={18} /><span>Delete chat</span>
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ===== BOTTOM SHEET: Folder Selector ===== */}
+      {(folderSheet || closingSheet === 'folder') && (
+        <div className={`mobile-sheet-overlay${closingSheet === 'folder' ? ' closing' : ''}`} onClick={() => closeSheet('folder')}>
+          <div className={`mobile-sheet${closingSheet === 'folder' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            {folders.map(folder => (
+              <button key={folder.id} className="mobile-sheet-item" onClick={() => folderSheet && addChatToFolder(folderSheet.chatId, folder.id)}>
+                <span>{folder.name}</span>
+                {folderSheet && folder.chats.includes(folderSheet.chatId) && <span style={{ color: '#13B962' }}>✓</span>}
+              </button>
+            ))}
+            <button className="mobile-sheet-item" onClick={() => {
+              const name = prompt('Folder name')
+              if (name) createFolder(name)
+            }}>
+              <span>+ New folder</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ===== BOTTOM SHEET: Folder Actions ===== */}
+      {(folderContextMenu || closingSheet === 'folderAction') && (
+        <div className={`mobile-sheet-overlay${closingSheet === 'folderAction' ? ' closing' : ''}`} onClick={() => closeSheet('folderAction')}>
+          <div className={`mobile-sheet${closingSheet === 'folderAction' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            {folderContextMenu && (
+              <>
+                <button className="mobile-sheet-item" onClick={() => { renameFolder(folderContextMenu.folderId); closeSheetImmediate() }}>
+                  <Pencil size={18} /><span>Rename</span>
+                </button>
+                <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { deleteFolder(folderContextMenu.folderId); closeSheetImmediate() }}>
+                  <Trash2 size={18} /><span>Delete</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}

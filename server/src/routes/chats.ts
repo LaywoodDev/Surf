@@ -26,15 +26,17 @@ router.get('/', (req: AuthRequest, res: Response) => {
   const chats = db.prepare(`
     SELECT c.id, c.name, 
       (SELECT text FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as lastMessage,
-      (SELECT created_at FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as time
+      (SELECT created_at FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as time,
+      cp.pinned as pinned
     FROM chats c
     JOIN chat_participants cp ON cp.chat_id = c.id
     WHERE cp.user_id = ?
-    ORDER BY time DESC
+    ORDER BY cp.pinned DESC, time DESC
   `).all(req.userId)
 
   res.json(chats.map((c: any) => ({
     ...c,
+    pinned: !!c.pinned,
     time: c.time ? new Date(c.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
   })))
 })
@@ -144,6 +146,42 @@ router.get('/:id/other-user', (req: AuthRequest, res: Response) => {
   delete user.privacy
 
   res.json(user)
+})
+
+router.delete('/:id', (req: AuthRequest, res: Response) => {
+  const { id } = req.params
+
+  const participant = db.prepare(
+    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
+  ).get(id, req.userId)
+
+  if (!participant) {
+    res.status(403).json({ error: 'Not a participant' })
+    return
+  }
+
+  db.prepare('DELETE FROM messages WHERE chat_id = ?').run(id)
+  db.prepare('DELETE FROM chat_participants WHERE chat_id = ?').run(id)
+  db.prepare('DELETE FROM chats WHERE id = ?').run(id)
+
+  res.json({ success: true })
+})
+
+router.put('/:id/pin', (req: AuthRequest, res: Response) => {
+  const { id } = req.params
+  const { pinned } = req.body
+
+  const participant = db.prepare(
+    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
+  ).get(id, req.userId)
+
+  if (!participant) {
+    res.status(403).json({ error: 'Not a participant' })
+    return
+  }
+
+  db.prepare('UPDATE chat_participants SET pinned = ? WHERE chat_id = ? AND user_id = ?').run(pinned ? 1 : 0, id, req.userId)
+  res.json({ success: true, pinned: !!pinned })
 })
 
 export default router

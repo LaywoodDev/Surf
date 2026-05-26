@@ -389,6 +389,7 @@
 }
 
 .mobile-chat-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -1653,4 +1654,47 @@
 
 .mobile-toggle.active .mobile-toggle-knob {
   transform: translateX(16px);
+}
+
+.mobile-folder-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 16px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex-shrink: 0;
+}
+
+.mobile-folder-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-folder-pill {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  padding: 6px 14px;
+  color: #8c8c88;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-folder-pill.active {
+  background-color: #ffffff;
+  color: #0F0F0F;
+  border-color: #ffffff;
+}
+
+.mobile-chat-pin {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #EEA47F;
+  position: absolute;
+  top: 8px;
+  right: 8px;
 }
