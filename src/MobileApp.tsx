@@ -5,8 +5,9 @@ import {
   ChevronLeft, MoreVertical, Camera, Image, File, X,
   ChevronRight, Mail, AtSign,
   Globe, Eye, Volume2, HardDrive, Download, AlignLeft, Clock,
-  Pin, Folder
+  Pin, Folder, Check
 } from 'lucide-react'
+import { t, langName, p } from './i18n'
 import './MobileApp.css'
 
 interface Chat {
@@ -91,6 +92,13 @@ function MobileApp() {
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null)
   const [folderSheet, setFolderSheet] = useState<{ chatId: number } | null>(null)
   const [folderContextMenu, setFolderContextMenu] = useState<{ folderId: number } | null>(null)
+  const [folderMenuSheet, setFolderMenuSheet] = useState(false)
+  const [folderEditOpen, setFolderEditOpen] = useState(false)
+  const [folderEditNames, setFolderEditNames] = useState<Record<number, string>>({})
+  const [folderManageView, setFolderManageView] = useState<{ folderId: number } | null>(null)
+  const [addChatsSheet, setAddChatsSheet] = useState<{ folderId: number; selected: Set<number> } | null>(null)
+  const [folderDialog, setFolderDialog] = useState<{ type: 'rename' | 'delete' | 'create'; folderId?: number } | null>(null)
+  const [folderDialogInput, setFolderDialogInput] = useState('')
 
   const [inputText, setInputText] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
@@ -141,6 +149,8 @@ function MobileApp() {
       setFolderSheet(null)
       setFolderContextMenu(null)
       setOptionPicker(null)
+      setFolderMenuSheet(false)
+      setAddChatsSheet(null)
       setClosingSheet(null)
     }, 200)
   }
@@ -152,6 +162,8 @@ function MobileApp() {
     setFolderSheet(null)
     setFolderContextMenu(null)
     setOptionPicker(null)
+    setFolderMenuSheet(false)
+    setAddChatsSheet(null)
     setClosingSheet(null)
   }
 
@@ -162,6 +174,8 @@ function MobileApp() {
   const touchDrag = useRef<{ startX: number; startTab: string } | null>(null)
   const chatLongPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const folderLongPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const tabLongPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const tabLongPressed = useRef(false)
 
   const tabKeys = ['chats', 'opus', 'profile'] as const
 
@@ -447,29 +461,59 @@ function MobileApp() {
     }).catch(err => alert(err.message))
   }
 
-  const createFolder = (name: string) => {
-    api('/folders', { method: 'POST', body: JSON.stringify({ name }) }).then((folder: Folder) => {
-      setFolders(prev => [...prev, folder])
-    }).catch(err => alert(err.message))
-  }
-
   const renameFolder = (folderId: number) => {
     const folder = folders.find(f => f.id === folderId)
-    const name = prompt('Rename folder', folder?.name || '')
-    if (!name?.trim()) return
-    api(`/folders/${folderId}`, { method: 'PUT', body: JSON.stringify({ name: name.trim() }) }).then(() => {
-      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name: name.trim() } : f))
-      setFolderContextMenu(null)
-    }).catch(err => alert(err.message))
+    setFolderDialogInput(folder?.name || '')
+    setFolderDialog({ type: 'rename', folderId })
   }
 
   const deleteFolder = (folderId: number) => {
-    if (!confirm('Delete this folder?')) return
-    api(`/folders/${folderId}`, { method: 'DELETE' }).then(() => {
-      setFolders(prev => prev.filter(f => f.id !== folderId))
-      if (activeFolderId === folderId) setActiveFolderId(null)
-      setFolderContextMenu(null)
-    }).catch(err => alert(err.message))
+    setFolderDialog({ type: 'delete', folderId })
+  }
+
+  const handleFolderDialogConfirm = () => {
+    if (!folderDialog) return
+    if (folderDialog.type === 'rename') {
+      const name = folderDialogInput.trim()
+      if (!name) return
+      api(`/folders/${folderDialog.folderId}`, { method: 'PUT', body: JSON.stringify({ name }) }).then(() => {
+        setFolders(prev => prev.map(f => f.id === folderDialog.folderId ? { ...f, name } : f))
+        setFolderDialog(null)
+        setFolderContextMenu(null)
+      }).catch(err => alert(err.message))
+    } else if (folderDialog.type === 'delete') {
+      api(`/folders/${folderDialog.folderId}`, { method: 'DELETE' }).then(() => {
+        setFolders(prev => prev.filter(f => f.id !== folderDialog.folderId))
+        if (activeFolderId === folderDialog.folderId) setActiveFolderId(null)
+        setFolderDialog(null)
+        setFolderContextMenu(null)
+      }).catch(err => alert(err.message))
+    } else if (folderDialog.type === 'create') {
+      const name = folderDialogInput.trim()
+      if (!name) return
+      api('/folders', { method: 'POST', body: JSON.stringify({ name }) }).then((folder: Folder) => {
+        setFolders(prev => [...prev, folder])
+        setFolderDialog(null)
+      }).catch(err => alert(err.message))
+    }
+  }
+
+  const handleTabLongPress = () => {
+    tabLongPressed.current = true
+    touchDrag.current = null
+    setFolderMenuSheet(true)
+  }
+
+  const toggleChatInFolder = (folderId: number, chatId: number, add: boolean) => {
+    if (add) {
+      api(`/folders/${folderId}/chats/${chatId}`, { method: 'POST' }).then(() => {
+        setFolders(prev => prev.map(f => f.id === folderId ? { ...f, chats: [...f.chats, chatId] } : f))
+      }).catch(err => alert(err.message))
+    } else {
+      api(`/folders/${folderId}/chats/${chatId}`, { method: 'DELETE' }).then(() => {
+        setFolders(prev => prev.map(f => f.id === folderId ? { ...f, chats: f.chats.filter(id => id !== chatId) } : f))
+      }).catch(err => alert(err.message))
+    }
   }
 
   const settingOptions: Record<string, string[]> = {
@@ -479,7 +523,7 @@ function MobileApp() {
     emailPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     bioPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     autoDownload: ['Wi-Fi only', 'Always', 'Never'],
-    language: ['English', 'Russian', 'Spanish'],
+    language: ['English', 'Russian'],
   }
 
   const cycleSetting = (key: keyof typeof settings, options: string[]) => {
@@ -551,7 +595,7 @@ function MobileApp() {
               </svg>
             </div>
             <h1 className="mobile-auth-title">Surf</h1>
-            <p className="mobile-auth-subtitle">{authMode === 'login' ? 'Welcome back' : 'Create account'}</p>
+            <p className="mobile-auth-subtitle">{authMode === 'login' ? t('welcomeBack', settings.language) : t('createAccount', settings.language)}</p>
           </div>
           <form className="mobile-auth-form" onSubmit={(e) => {
             e.preventDefault()
@@ -567,30 +611,30 @@ function MobileApp() {
             {authMode === 'register' && (
               <>
                 <div className="mobile-auth-field">
-                  <label className="mobile-auth-label">Name</label>
-                  <input className="mobile-auth-input" placeholder="Your name" value={authForm.name} onChange={(e) => setAuthForm(f => ({ ...f, name: e.target.value }))} required />
+                  <label className="mobile-auth-label">{t('name', settings.language)}</label>
+                  <input className="mobile-auth-input" placeholder={t('name', settings.language)} value={authForm.name} onChange={(e) => setAuthForm(f => ({ ...f, name: e.target.value }))} required />
                 </div>
                 <div className="mobile-auth-field">
-                  <label className="mobile-auth-label">Surname</label>
-                  <input className="mobile-auth-input" placeholder="Your surname" value={authForm.surname} onChange={(e) => setAuthForm(f => ({ ...f, surname: e.target.value }))} required />
+                  <label className="mobile-auth-label">{t('surname', settings.language)}</label>
+                  <input className="mobile-auth-input" placeholder={t('surname', settings.language)} value={authForm.surname} onChange={(e) => setAuthForm(f => ({ ...f, surname: e.target.value }))} required />
                 </div>
               </>
             )}
             <div className="mobile-auth-field">
-              <label className="mobile-auth-label">Email</label>
-              <input className="mobile-auth-input" type="email" placeholder="your@email.com" value={authForm.email} onChange={(e) => setAuthForm(f => ({ ...f, email: e.target.value }))} required />
+              <label className="mobile-auth-label">{t('email', settings.language)}</label>
+              <input className="mobile-auth-input" type="email" placeholder={t('email', settings.language)} value={authForm.email} onChange={(e) => setAuthForm(f => ({ ...f, email: e.target.value }))} required />
             </div>
             <div className="mobile-auth-field">
-              <label className="mobile-auth-label">Password</label>
+              <label className="mobile-auth-label">{t('password', settings.language)}</label>
               <input className="mobile-auth-input" type="password" placeholder="••••••••" value={authForm.password} onChange={(e) => setAuthForm(f => ({ ...f, password: e.target.value }))} required />
             </div>
-            <button className="mobile-auth-submit" type="submit">{authMode === 'login' ? 'Log in' : 'Create account'}</button>
+            <button className="mobile-auth-submit" type="submit">{authMode === 'login' ? t('logIn', settings.language) : t('createAccount', settings.language)}</button>
           </form>
           <p className="mobile-auth-switch">
             {authMode === 'login' ? (
-              <>Don't have an account? <button className="mobile-auth-link" onClick={() => { setAuthMode('register'); setAuthForm({ name: '', surname: '', email: '', password: '' }) }}>Register</button></>
+              <>{t('dontHaveAccount', settings.language)} <button className="mobile-auth-link" onClick={() => { setAuthMode('register'); setAuthForm({ name: '', surname: '', email: '', password: '' }) }}>{t('register', settings.language)}</button></>
             ) : (
-              <>Already have an account? <button className="mobile-auth-link" onClick={() => { setAuthMode('login'); setAuthForm({ name: '', surname: '', email: '', password: '' }) }}>Log in</button></>
+              <>{t('alreadyHaveAccount', settings.language)} <button className="mobile-auth-link" onClick={() => { setAuthMode('login'); setAuthForm({ name: '', surname: '', email: '', password: '' }) }}>{t('logIn', settings.language)}</button></>
             )}
           </p>
         </div>
@@ -621,7 +665,7 @@ function MobileApp() {
                     ref={searchInputRef}
                     type="text"
                     className="mobile-search-input"
-                    placeholder="Search users..."
+                    placeholder={t('searchUsers', settings.language)}
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                   />
@@ -653,16 +697,16 @@ function MobileApp() {
                     </div>
                   ))
                 ) : searchQuery.trim() ? (
-                  <div className="mobile-search-empty">No users found</div>
+                  <div className="mobile-search-empty">{t('noUsersFound', settings.language)}</div>
                 ) : (
-                  <div className="mobile-search-hint">Type to search users</div>
+                  <div className="mobile-search-hint">{t('typeToSearch', settings.language)}</div>
                 )}
               </div>
             ) : (
               <>
                 {folders.length > 0 && (
                   <div className="mobile-folder-bar">
-                    <button className={`mobile-folder-pill ${activeFolderId === null ? 'active' : ''}`} onClick={() => setActiveFolderId(null)}>All</button>
+                    <button className={`mobile-folder-pill ${activeFolderId === null ? 'active' : ''}`} onClick={() => setActiveFolderId(null)}>{t('all', settings.language)}</button>
                     {folders.map(folder => (
                       <button key={folder.id} className={`mobile-folder-pill ${activeFolderId === folder.id ? 'active' : ''}`}
                         onClick={() => setActiveFolderId(folder.id)}
@@ -690,7 +734,7 @@ function MobileApp() {
                     if (displayChats.length === 0) {
                       return (
                         <div className="mobile-chats-empty">
-                          <div className="mobile-chats-empty-text">No chats</div>
+                          <div className="mobile-chats-empty-text">{t('noChats', settings.language)}</div>
                         </div>
                       )
                     }
@@ -739,8 +783,8 @@ function MobileApp() {
                 <div className="mobile-thread-name">{activeChat.name}</div>
               </div>
               <div className="mobile-thread-actions">
-                <button className="mobile-thread-action" title="Call"><Phone size={20} /></button>
-                <button className="mobile-thread-action" title="More"><MoreVertical size={20} /></button>
+                <button className="mobile-thread-action" title={t('call', settings.language)}><Phone size={20} /></button>
+                <button className="mobile-thread-action" title={t('more', settings.language)}><MoreVertical size={20} /></button>
               </div>
             </div>
 
@@ -773,7 +817,7 @@ function MobileApp() {
                 <input
                   type="text"
                   className="mobile-input"
-                  placeholder="Write a message..."
+                  placeholder={t('writeMessage', settings.language)}
                   value={chatInputTexts[activeChat.id] || ''}
                   onChange={(e) => handleChatInputChange(activeChat.id, e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(activeChat.id) }}
@@ -796,7 +840,7 @@ function MobileApp() {
               <button className="mobile-thread-back" onClick={handleCloseContact}>
                 <ChevronLeft size={24} />
               </button>
-              <div className="mobile-thread-name" style={{ marginLeft: 4 }}>Contact</div>
+              <div className="mobile-thread-name" style={{ marginLeft: 4 }}>{t('contact', settings.language)}</div>
             </div>
             <div className="mobile-profile-top">
               <div className="mobile-profile-avatar" style={contactProfile?.avatar ? { backgroundImage: `url(${contactProfile.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}}>
@@ -808,9 +852,9 @@ function MobileApp() {
             {contactProfile && (
               <div className="mobile-profile-section" style={{ paddingTop: 8 }}>
                 <div className="mobile-profile-card">
-                  <div className="mobile-profile-row"><span className="mobile-profile-label">Email</span><span className="mobile-profile-value">{contactProfile.email || '—'}</span></div>
-                  {contactProfile.phone && <div className="mobile-profile-row"><span className="mobile-profile-label">Phone</span><span className="mobile-profile-value">{contactProfile.phone}</span></div>}
-                  {contactProfile.username && <div className="mobile-profile-row"><span className="mobile-profile-label">Username</span><span className="mobile-profile-value">@{contactProfile.username}</span></div>}
+                  <div className="mobile-profile-row"><span className="mobile-profile-label">{t('email', settings.language)}</span><span className="mobile-profile-value">{contactProfile.email || '—'}</span></div>
+                  {contactProfile.phone && <div className="mobile-profile-row"><span className="mobile-profile-label">{t('phone', settings.language)}</span><span className="mobile-profile-value">{contactProfile.phone}</span></div>}
+                  {contactProfile.username && <div className="mobile-profile-row"><span className="mobile-profile-label">{t('username', settings.language)}</span><span className="mobile-profile-value">@{contactProfile.username}</span></div>}
                 </div>
               </div>
             )}
@@ -822,12 +866,12 @@ function MobileApp() {
           <div className={`mobile-opus${aiConversation.length > 0 ? ' has-messages' : ''}${firstOpusEntry && aiConversation.length === 0 ? ' mobile-opus-entry' : ''}`}>
             {aiConversation.length === 0 ? (
               <div className="mobile-opus-welcome">
-                <h1 className="mobile-opus-header">Let's text someone</h1>
+                <h1 className="mobile-opus-header">{t('letsTextSomeone', settings.language)}</h1>
                 <div className="mobile-opus-input-wrapper">
                   <input
                     type="text"
                     className="mobile-opus-input"
-                    placeholder="Ask Opus"
+                    placeholder={t('askOpus', settings.language)}
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') handleAiSend() }}
@@ -860,7 +904,7 @@ function MobileApp() {
                     <input
                       type="text"
                       className="mobile-opus-input"
-                      placeholder="Ask Opus"
+                      placeholder={t('askOpus', settings.language)}
                       value={inputText}
                       onChange={(e) => setInputText(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') handleAiSend() }}
@@ -899,7 +943,7 @@ function MobileApp() {
 
             <div className="mobile-profile-actions">
               <button className="mobile-profile-action-btn primary" onClick={() => setProfileView('edit')}>
-                <Pencil size={16} /> Edit Profile
+                <Pencil size={16} /> {t('editProfile', settings.language)}
               </button>
               <button className="mobile-profile-action-btn icon-only" onClick={() => setProfileView('settings')}>
                 <Settings size={18} />
@@ -917,13 +961,13 @@ function MobileApp() {
               <button className="mobile-edit-back" onClick={() => setProfileView('profile')}>
                 <ChevronLeft size={24} />
               </button>
-              <div className="mobile-edit-title">Edit Profile</div>
+              <div className="mobile-edit-title">{t('editProfile', settings.language)}</div>
               <button className="mobile-edit-save" onClick={() => {
                 api('/users/me', { method: 'PUT', body: JSON.stringify(editProfile) }).then(() => {
                   setUser(prev => prev ? { ...prev, ...editProfile } : prev)
                   setProfileView('profile')
                 }).catch(err => alert(err.message))
-              }}>Save</button>
+              }}><Check size={22} /></button>
             </div>
             <div className="mobile-edit-body">
               <input ref={avatarFileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => {
@@ -949,18 +993,18 @@ function MobileApp() {
                 </div>
               </div>
               <div className="mobile-edit-field">
-                <label className="mobile-edit-label">Username</label>
+                <label className="mobile-edit-label">{t('username', settings.language)}</label>
                 <input className="mobile-edit-input" value={editProfile.username}
-                  onChange={(e) => setEditProfile(p => ({ ...p, username: e.target.value }))} placeholder="@username" />
+                  onChange={(e) => setEditProfile(p => ({ ...p, username: e.target.value }))} placeholder={t('username', settings.language)} />
               </div>
               <div className="mobile-edit-field">
-                <label className="mobile-edit-label">Phone</label>
+                <label className="mobile-edit-label">{t('phone', settings.language)}</label>
                 <input className="mobile-edit-input" value={editProfile.phone}
-                  onChange={(e) => setEditProfile(p => ({ ...p, phone: e.target.value }))} placeholder="+1 (555) 000-0000" />
+                  onChange={(e) => setEditProfile(p => ({ ...p, phone: e.target.value }))} placeholder={t('phone', settings.language)} />
               </div>
               <div className="mobile-edit-field">
-                <label className="mobile-edit-label">Bio</label>
-                <textarea className="mobile-edit-textarea" rows={3} placeholder="Write something..."
+                <label className="mobile-edit-label">{t('bio', settings.language)}</label>
+                <textarea className="mobile-edit-textarea" rows={3} placeholder={t('bio', settings.language)}
                   value={editProfile.bio} onChange={(e) => setEditProfile(p => ({ ...p, bio: e.target.value }))} />
               </div>
             </div>
@@ -974,124 +1018,124 @@ function MobileApp() {
               <button className="mobile-edit-back" onClick={() => setProfileView('profile')}>
                 <ChevronLeft size={24} />
               </button>
-              <div className="mobile-edit-title">Settings</div>
+              <div className="mobile-edit-title">{t('settings', settings.language)}</div>
             </div>
             <div className="mobile-settings-scroll">
               <div className="mobile-settings-group">
-                <h3 className="mobile-settings-group-title">General</h3>
+                <h3 className="mobile-settings-group-title">{t('general', settings.language)}</h3>
                 <div className="mobile-settings-card">
                   <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('language')}>
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#3287FE' }}>
                       <Globe size={18} />
                     </div>
-                    <span className="mobile-settings-label">Language</span>
-                    <span className="mobile-settings-value">{settings.language}</span>
+                    <span className="mobile-settings-label">{t('language', settings.language)}</span>
+                    <span className="mobile-settings-value">{langName(settings.language)}</span>
                     <ChevronRight size={16} className="mobile-settings-chevron" />
                   </div>
                 </div>
               </div>
 
               <div className="mobile-settings-group">
-                <h3 className="mobile-settings-group-title">Notifications</h3>
+                <h3 className="mobile-settings-group-title">{t('notifications', settings.language)}</h3>
                 <div className="mobile-settings-card">
                   <div className="mobile-settings-row">
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#13B962' }}>
                       <Eye size={18} />
                     </div>
-                    <span className="mobile-settings-label">Message previews</span>
+                    <span className="mobile-settings-label">{t('messagePreviews', settings.language)}</span>
                     <ToggleSwitch checked={settings.previews === 'On'} onChange={() => cycleSetting('previews', ['On', 'Off'])} />
                   </div>
                   <div className="mobile-settings-row">
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#F6BE11' }}>
                       <Volume2 size={18} />
                     </div>
-                    <span className="mobile-settings-label">Sounds</span>
+                    <span className="mobile-settings-label">{t('sounds', settings.language)}</span>
                     <ToggleSwitch checked={settings.sounds === 'On'} onChange={() => cycleSetting('sounds', ['On', 'Off'])} />
                   </div>
                 </div>
               </div>
 
               <div className="mobile-settings-group">
-                <h3 className="mobile-settings-group-title">Account</h3>
+                <h3 className="mobile-settings-group-title">{t('account', settings.language)}</h3>
                 <div className="mobile-settings-card">
                   <div className="mobile-settings-row">
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#3287FE' }}>
                       <User size={18} />
                     </div>
-                    <span className="mobile-settings-label">Name</span>
+                    <span className="mobile-settings-label">{t('name', settings.language)}</span>
                     <span className="mobile-settings-value">{user?.name || ''}</span>
                   </div>
                   <div className="mobile-settings-row">
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#FA4442' }}>
                       <Mail size={18} />
                     </div>
-                    <span className="mobile-settings-label">Email</span>
+                    <span className="mobile-settings-label">{t('email', settings.language)}</span>
                     <span className="mobile-settings-value">{user?.email || ''}</span>
                   </div>
                 </div>
               </div>
 
               <div className="mobile-settings-group">
-                <h3 className="mobile-settings-group-title">Privacy</h3>
+                <h3 className="mobile-settings-group-title">{t('privacy', settings.language)}</h3>
                 <div className="mobile-settings-card">
                   <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('lastSeen')}>
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#13B962' }}>
                       <Clock size={18} />
                     </div>
-                    <span className="mobile-settings-label">Last seen</span>
-                    <span className="mobile-settings-value">{settings.lastSeen}</span>
+                    <span className="mobile-settings-label">{t('lastSeen', settings.language)}</span>
+                    <span className="mobile-settings-value">{p(settings.lastSeen, settings.language)}</span>
                     <ChevronRight size={16} className="mobile-settings-chevron" />
                   </div>
                   <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('profilePhoto')}>
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#3287FE' }}>
                       <Image size={18} />
                     </div>
-                    <span className="mobile-settings-label">Profile photo</span>
-                    <span className="mobile-settings-value">{settings.profilePhoto}</span>
+                    <span className="mobile-settings-label">{t('profilePhoto', settings.language)}</span>
+                    <span className="mobile-settings-value">{p(settings.profilePhoto, settings.language)}</span>
                     <ChevronRight size={16} className="mobile-settings-chevron" />
                   </div>
                   <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('phonePrivacy')}>
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#F6BE11' }}>
                       <Phone size={18} />
                     </div>
-                    <span className="mobile-settings-label">Phone</span>
-                    <span className="mobile-settings-value">{settings.phonePrivacy}</span>
+                    <span className="mobile-settings-label">{t('phone', settings.language)}</span>
+                    <span className="mobile-settings-value">{p(settings.phonePrivacy, settings.language)}</span>
                     <ChevronRight size={16} className="mobile-settings-chevron" />
                   </div>
                   <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('emailPrivacy')}>
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#FA4442' }}>
                       <AtSign size={18} />
                     </div>
-                    <span className="mobile-settings-label">Email</span>
-                    <span className="mobile-settings-value">{settings.emailPrivacy}</span>
+                    <span className="mobile-settings-label">{t('email', settings.language)}</span>
+                    <span className="mobile-settings-value">{p(settings.emailPrivacy, settings.language)}</span>
                     <ChevronRight size={16} className="mobile-settings-chevron" />
                   </div>
                   <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('bioPrivacy')}>
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#8c8c88' }}>
                       <AlignLeft size={18} />
                     </div>
-                    <span className="mobile-settings-label">Bio</span>
-                    <span className="mobile-settings-value">{settings.bioPrivacy}</span>
+                    <span className="mobile-settings-label">{t('bio', settings.language)}</span>
+                    <span className="mobile-settings-value">{p(settings.bioPrivacy, settings.language)}</span>
                     <ChevronRight size={16} className="mobile-settings-chevron" />
                   </div>
                 </div>
               </div>
 
               <div className="mobile-settings-group">
-                <h3 className="mobile-settings-group-title">Data</h3>
+                <h3 className="mobile-settings-group-title">{t('data', settings.language)}</h3>
                 <div className="mobile-settings-card">
                   <div className="mobile-settings-row">
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#3287FE' }}>
                       <HardDrive size={18} />
                     </div>
-                    <span className="mobile-settings-label">Storage</span>
+                    <span className="mobile-settings-label">{t('storage', settings.language)}</span>
                     <span className="mobile-settings-value">12.4 MB</span>
                   </div>
                   <div className="mobile-settings-row clickable" onClick={() => cycleSetting('autoDownload', ['Wi-Fi only', 'Always', 'Never'])}>
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#13B962' }}>
                       <Download size={18} />
                     </div>
-                    <span className="mobile-settings-label">Auto-download</span>
+                    <span className="mobile-settings-label">{t('autoDownload', settings.language)}</span>
                     <span className="mobile-settings-value">{settings.autoDownload}</span>
                     <ChevronRight size={16} className="mobile-settings-chevron" />
                   </div>
@@ -1115,7 +1159,32 @@ function MobileApp() {
         <button
           ref={el => void (tabRefs.current['chats'] = el)}
           className={`mobile-tab ${tab === 'chats' ? 'active' : ''}`}
-          onClick={() => setTab('chats')}
+          onClick={() => {
+            if (tabLongPressed.current) {
+              tabLongPressed.current = false
+              return
+            }
+            setTab('chats')
+          }}
+          onTouchStart={() => {
+            tabLongPressTimer.current = setTimeout(() => {
+              tabLongPressTimer.current = null
+              handleTabLongPress()
+            }, 500)
+          }}
+          onTouchEnd={() => {
+            if (tabLongPressTimer.current) {
+              clearTimeout(tabLongPressTimer.current)
+              tabLongPressTimer.current = null
+            }
+          }}
+          onTouchMove={() => {
+            if (tabLongPressTimer.current) {
+              clearTimeout(tabLongPressTimer.current)
+              tabLongPressTimer.current = null
+            }
+          }}
+          onContextMenu={(e) => { e.preventDefault(); handleTabLongPress() }}
         >
           <span className="mobile-tab-icon"><MessageSquare size={20} /></span>
         </button>
@@ -1147,10 +1216,10 @@ function MobileApp() {
           <div className={`mobile-sheet${closingSheet === 'attach' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
             <div className="mobile-sheet-handle" />
             <button className="mobile-sheet-item" onClick={() => { fileInputRef.current?.click(); closeSheetImmediate() }}>
-              <Image size={18} /><span>Photo or video</span>
+              <Image size={18} /><span>{t('photoOrVideo', settings.language)}</span>
             </button>
             <button className="mobile-sheet-item" onClick={() => { fileInputRef.current?.click(); closeSheetImmediate() }}>
-              <File size={18} /><span>Document</span>
+              <File size={18} /><span>{t('document', settings.language)}</span>
             </button>
           </div>
         </div>
@@ -1162,10 +1231,10 @@ function MobileApp() {
           <div className={`mobile-sheet${closingSheet === 'context' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
             <div className="mobile-sheet-handle" />
             <button className="mobile-sheet-item" onClick={() => { copyMessage(); closeSheetImmediate() }}>
-              <Copy size={18} /><span>Copy</span>
+              <Copy size={18} /><span>{t('copy', settings.language)}</span>
             </button>
             <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { deleteMessage(); closeSheetImmediate() }}>
-              <Trash2 size={18} /><span>Delete</span>
+              <Trash2 size={18} /><span>{t('delete', settings.language)}</span>
             </button>
           </div>
         </div>
@@ -1179,13 +1248,15 @@ function MobileApp() {
             {chatContextMenu && (
               <>
                 <button className="mobile-sheet-item" onClick={() => { togglePinChat(chatContextMenu.chatId); closeSheetImmediate() }}>
-                  <Pin size={18} /><span>{chats.find(c => c.id === chatContextMenu.chatId)?.pinned ? 'Unpin' : 'Pin'}</span>
+                  <Pin size={18} /><span>{chats.find(c => c.id === chatContextMenu.chatId)?.pinned ? t('unpin', settings.language) : t('pin', settings.language)}</span>
                 </button>
-                <button className="mobile-sheet-item" onClick={() => { setFolderSheet({ chatId: chatContextMenu.chatId }); setChatContextMenu(null); }}>
-                  <Folder size={18} /><span>Folder</span>
-                </button>
+                {folders.length > 0 && (
+                  <button className="mobile-sheet-item" onClick={() => { setFolderSheet({ chatId: chatContextMenu.chatId }); setChatContextMenu(null); }}>
+                    <Folder size={18} /><span>{t('folder', settings.language)}</span>
+                  </button>
+                )}
                 <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { deleteChat(); closeSheetImmediate() }}>
-                  <Trash2 size={18} /><span>Delete chat</span>
+                  <Trash2 size={18} /><span>{t('deleteChat', settings.language)}</span>
                 </button>
               </>
             )}
@@ -1204,12 +1275,7 @@ function MobileApp() {
                 {folderSheet && folder.chats.includes(folderSheet.chatId) && <span style={{ color: '#13B962' }}>✓</span>}
               </button>
             ))}
-            <button className="mobile-sheet-item" onClick={() => {
-              const name = prompt('Folder name')
-              if (name) createFolder(name)
-            }}>
-              <span>+ New folder</span>
-            </button>
+
           </div>
         </div>
       )}
@@ -1222,10 +1288,10 @@ function MobileApp() {
             {folderContextMenu && (
               <>
                 <button className="mobile-sheet-item" onClick={() => { renameFolder(folderContextMenu.folderId); closeSheetImmediate() }}>
-                  <Pencil size={18} /><span>Rename</span>
+                  <Pencil size={18} /><span>{t('rename', settings.language)}</span>
                 </button>
                 <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { deleteFolder(folderContextMenu.folderId); closeSheetImmediate() }}>
-                  <Trash2 size={18} /><span>Delete</span>
+                  <Trash2 size={18} /><span>{t('delete', settings.language)}</span>
                 </button>
               </>
             )}
@@ -1245,10 +1311,214 @@ function MobileApp() {
                 onClick={() => { if (optionPicker) { selectSetting(optionPicker, option); closeSheetImmediate() } }}
                 style={optionPicker && (settings as any)[optionPicker] === option ? { color: '#ffffff' } : {}}
               >
-                <span style={{ flex: 1 }}>{option}</span>
+                <span style={{ flex: 1 }}>{p(option, settings.language)}</span>
                 {optionPicker && (settings as any)[optionPicker] === option && <span style={{ color: '#ffffff' }}>✓</span>}
               </button>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* ===== BOTTOM SHEET: Folder Menu (from tab bar) ===== */}
+      {(folderMenuSheet || closingSheet === 'folderMenu') && (
+        <div className={`mobile-sheet-overlay${closingSheet === 'folderMenu' ? ' closing' : ''}`} onClick={() => closeSheet('folderMenu')}>
+          <div className={`mobile-sheet${closingSheet === 'folderMenu' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            <button className="mobile-sheet-item" onClick={() => { setTab('chats'); setActiveFolderId(null); closeSheetImmediate() }}>
+              <span style={{ flex: 1 }}>{t('all', settings.language)}</span>
+              {activeFolderId === null && <span style={{ color: '#13B962' }}>✓</span>}
+            </button>
+            {folders.map(folder => (
+              <button key={folder.id} className="mobile-sheet-item" onClick={() => { setTab('chats'); setActiveFolderId(folder.id); closeSheetImmediate() }}>
+                <span style={{ flex: 1 }}>{folder.name}</span>
+                {activeFolderId === folder.id && <span style={{ color: '#13B962' }}>✓</span>}
+              </button>
+            ))}
+            <div style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.06)', margin: '8px 16px' }} />
+            <button className="mobile-sheet-item" onClick={() => { setFolderEditOpen(true); closeSheetImmediate() }}>
+              <Pencil size={18} /><span>{t('editFolders', settings.language)}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ===== FULLSCREEN: Folder Edit ===== */}
+      {folderEditOpen && (
+        <div className="mobile-folder-edit">
+          <div className="mobile-edit-header">
+            <button className="mobile-edit-back" onClick={() => setFolderEditOpen(false)}>
+              <ChevronLeft size={24} />
+            </button>
+            <div className="mobile-edit-title">{t('editFolders', settings.language)}</div>
+            <div />
+          </div>
+          <div className="mobile-folder-edit-body">
+            {folders.length > 0 && (
+              <div style={{ padding: '0 16px' }}>
+                <div className="mobile-settings-card">
+                  {folders.map((folder) => (
+                    <button
+                      key={folder.id}
+                      className="mobile-settings-row clickable"
+                      onClick={() => {
+                        setFolderManageView({ folderId: folder.id })
+                        setFolderEditNames(prev => ({ ...prev, [folder.id]: folder.name }))
+                      }}
+                    >
+                      <span className="mobile-settings-label">{folder.name}</span>
+                      <span className="mobile-settings-value">{folder.chats.length} {t('chats', settings.language).toLowerCase()}</span>
+                      <ChevronRight size={16} className="mobile-settings-chevron" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <button className="mobile-folder-edit-create" onClick={() => {
+              setFolderDialogInput('')
+              setFolderDialog({ type: 'create' })
+            }}>
+              <Plus size={16} /> {t('newFolder', settings.language)}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ===== FULLSCREEN: Folder Manage ===== */}
+      {folderManageView && (() => {
+        const folder = folders.find(f => f.id === folderManageView.folderId)
+        if (!folder) return null
+        return (
+          <div className="mobile-folder-edit">
+            <div className="mobile-edit-header">
+              <button className="mobile-edit-back" onClick={() => setFolderManageView(null)}>
+                <ChevronLeft size={24} />
+              </button>
+              <div className="mobile-edit-title">{folder.name}</div>
+              <button className="mobile-edit-save icon-only" onClick={() => {
+                const newName = folderEditNames[folder.id]?.trim()
+                if (newName && newName !== folder.name) {
+                  api(`/folders/${folder.id}`, { method: 'PUT', body: JSON.stringify({ name: newName }) }).then(() => {
+                    setFolders(prev => prev.map(f => f.id === folder.id ? { ...f, name: newName } : f))
+                  }).catch(err => alert(err.message))
+                }
+                setFolderManageView(null)
+              }}>
+                <Check size={20} />
+              </button>
+            </div>
+            <div className="mobile-folder-edit-body">
+              <div className="mobile-edit-field" style={{ padding: '0 16px' }}>
+                <label className="mobile-edit-label">{t('name', settings.language)}</label>
+                <input
+                  className="mobile-edit-input"
+                  value={folderEditNames[folder.id] ?? folder.name}
+                  onChange={(e) => setFolderEditNames(prev => ({ ...prev, [folder.id]: e.target.value }))}
+                  placeholder={t('folderNamePrompt', settings.language)}
+                />
+              </div>
+
+              <div className="mobile-settings-group" style={{ marginTop: 8 }}>
+                <h3 className="mobile-settings-group-title">{t('chats', settings.language)}</h3>
+                {folder.chats.length > 0 && (
+                  <div className="mobile-settings-card">
+                    {chats.filter(c => folder.chats.includes(c.id)).map((chat) => (
+                      <div key={chat.id} className="mobile-settings-row">
+                        <span className="mobile-settings-label">{chat.name}</span>
+                        <button
+                          className="mobile-folder-edit-chat-remove"
+                          onClick={() => toggleChatInFolder(folder.id, chat.id, false)}
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', gap: 12, padding: '0 16px', marginTop: 'auto', marginBottom: 'calc(16px + env(safe-area-inset-bottom, 0px))' }}>
+                <button
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    padding: 14,
+                    borderRadius: 12,
+                    backgroundColor: '#ffffff',
+                    color: '#0F0F0F',
+                    border: 'none',
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: 15,
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => setAddChatsSheet({ folderId: folder.id, selected: new Set() })}
+                >
+                  <Plus size={16} /> {t('addChat', settings.language)}
+                </button>
+                <button
+                  className="mobile-logout-btn"
+                  style={{ flex: 1, width: 'auto', margin: 0 }}
+                  onClick={() => deleteFolder(folder.id)}
+                >
+                  <Trash2 size={16} /> {t('deleteFolder', settings.language)}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* ===== BOTTOM SHEET: Add Chats to Folder ===== */}
+      {(addChatsSheet || closingSheet === 'addChats') && (
+        <div className={`mobile-sheet-overlay${closingSheet === 'addChats' ? ' closing' : ''}`} onClick={() => closeSheet('addChats')}>
+          <div className={`mobile-sheet${closingSheet === 'addChats' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            {(() => {
+              const folder = folders.find(f => f.id === addChatsSheet?.folderId)
+              if (!folder) return null
+              const availableChats = chats.filter(c => !folder.chats.includes(c.id))
+              if (availableChats.length === 0) return <div className="mobile-sheet-item" style={{ color: '#8c8c88' }}>{t('noChats', settings.language)}</div>
+              return availableChats.map(chat => {
+                const isSelected = addChatsSheet?.selected.has(chat.id)
+                return (
+                  <button
+                    key={chat.id}
+                    className={`mobile-sheet-item${isSelected ? ' mobile-sheet-item-selected' : ''}`}
+                    onClick={() => {
+                      setAddChatsSheet(prev => {
+                        if (!prev) return prev
+                        const next = new Set(prev.selected)
+                        if (next.has(chat.id)) next.delete(chat.id)
+                        else next.add(chat.id)
+                        return { ...prev, selected: next }
+                      })
+                    }}
+                  >
+                    <span style={{ flex: 1 }}>{chat.name}</span>
+                    {isSelected && <span style={{ color: '#13B962' }}>✓</span>}
+                  </button>
+                )
+              })
+            })()}
+            <div style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.06)', margin: '8px 16px' }} />
+            <button
+              className="mobile-sheet-item"
+              style={{ justifyContent: 'center', fontWeight: 600, opacity: (addChatsSheet?.selected.size ?? 0) > 0 ? 1 : 0.4 }}
+              onClick={() => {
+                if (!addChatsSheet?.selected.size) return
+                const { folderId, selected } = addChatsSheet
+                Promise.all(Array.from(selected).map(chatId => api(`/folders/${folderId}/chats/${chatId}`, { method: 'POST' }))).then(() => {
+                  setFolders(prev => prev.map(f => f.id === folderId ? { ...f, chats: [...f.chats, ...Array.from(selected)] } : f))
+                  closeSheetImmediate()
+                }).catch(err => alert(err.message))
+              }}
+            >
+              {t('save', settings.language)}
+            </button>
           </div>
         </div>
       )}
@@ -1257,6 +1527,52 @@ function MobileApp() {
       {fullscreenImage && (
         <div className="mobile-fullscreen-overlay" onClick={() => setFullscreenImage(null)}>
           <img src={fullscreenImage} className="mobile-fullscreen-img" alt="Fullscreen" />
+        </div>
+      )}
+
+      {folderDialog && (
+        <div className="dialog-overlay" onClick={() => setFolderDialog(null)}>
+          <div className="dialog" onClick={e => e.stopPropagation()}>
+            <div className="dialog-header">
+              <div className="dialog-title">
+                {folderDialog.type === 'rename' ? t('renameFolderPrompt', settings.language) :
+                 folderDialog.type === 'delete' ? t('deleteFolderConfirm', settings.language) :
+                 t('newFolder', settings.language)}
+              </div>
+              <button className="dialog-close" onClick={() => setFolderDialog(null)}>
+                <X size={16} />
+              </button>
+            </div>
+            {folderDialog.type === 'rename' || folderDialog.type === 'create' ? (
+              <>
+                <input
+                  className="dialog-input"
+                  value={folderDialogInput}
+                  onChange={e => setFolderDialogInput(e.target.value)}
+                  placeholder={t('folderNamePrompt', settings.language)}
+                  autoFocus
+                  onKeyDown={e => { if (e.key === 'Enter') handleFolderDialogConfirm() }}
+                />
+                <div className="dialog-actions">
+                  <button className="dialog-btn dialog-btn-cancel" onClick={() => setFolderDialog(null)}>
+                    {t('cancel', settings.language)}
+                  </button>
+                  <button className="dialog-btn dialog-btn-primary" onClick={handleFolderDialogConfirm}>
+                    {folderDialog.type === 'rename' ? t('rename', settings.language) : t('create', settings.language)}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="dialog-actions">
+                <button className="dialog-btn dialog-btn-cancel" onClick={() => setFolderDialog(null)}>
+                  {t('cancel', settings.language)}
+                </button>
+                <button className="dialog-btn dialog-btn-danger" onClick={handleFolderDialogConfirm}>
+                  {t('delete', settings.language)}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
