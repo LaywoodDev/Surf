@@ -9,6 +9,7 @@ import chatsRoutes from './routes/chats'
 import foldersRoutes from './routes/folders'
 import usersRoutes from './routes/users'
 import aiRoutes from './routes/ai'
+import pollsRoutes from './routes/polls'
 import { authMiddleware } from './middleware/auth'
 import db from './db'
 
@@ -41,11 +42,22 @@ app.post('/api/upload/avatar', authMiddleware, upload.single('avatar'), (req: an
   res.json({ avatar: url })
 })
 
+app.post('/api/upload/file', authMiddleware, upload.single('file'), (req: any, res: any) => {
+  if (!req.file) {
+    res.status(400).json({ error: 'No file uploaded' })
+    return
+  }
+  const url = `/uploads/${req.file.filename}`
+  const type = req.file.mimetype.startsWith('image/') ? 'image' : 'document'
+  res.json({ url, type })
+})
+
 app.use('/api/auth', authRoutes)
 app.use('/api/chats', chatsRoutes)
 app.use('/api/folders', foldersRoutes)
 app.use('/api/users', usersRoutes)
 app.use('/api/ai', aiRoutes)
+app.use('/api/polls', pollsRoutes)
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`)

@@ -1,33 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none">
-  <mask id="a" maskUnits="userSpaceOnUse" x="4" y="6" width="24" height="20">
-    <path d="M5.188 8.739l6.636 10.256c.337.52 1.031.669 1.552.332l6.147-3.977c.238-.154.546-.149.779.012l6.929 4.778c1.01.697 2.246-.502 1.579-1.533l-6.636-10.255c-.337-.521-1.032-.67-1.552-.333l-6.147 3.977a.785.785 0 01-.779-.012l-6.928-4.777c-1.011-.698-2.247.502-1.58 1.532z" fill="white"/>
-  </mask>
-  <g mask="url(#a)">
-    <g filter="url(#b)">
-      <circle cx="23.75" cy="14.75" r="7.75" fill="#3287FE"/>
-    </g>
-    <g filter="url(#c)">
-      <circle cy="17.25" r="7.75" fill="#13B962"/>
-    </g>
-    <g filter="url(#d)">
-      <circle cx="4.5" cy="8.25" r="7.75" fill="#F6BE11"/>
-    </g>
-    <g filter="url(#e)">
-      <circle cx="14.75" cy="4.5" r="7.75" fill="#FA4442"/>
+  <g transform="translate(4, 9)">
+    <mask id="a" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="14">
+      <path d="M0.188963 1.7392L6.82464 11.9946C7.16161 12.5153 7.85613 12.664 8.37683 12.327L14.5238 8.34973C14.7617 8.19573 15.0697 8.2003 15.303 8.36116L22.2314 13.1397C23.2423 13.8365 24.4781 12.6373 23.811 11.6066L17.1746 1.35116C16.8376 0.830456 16.1431 0.681795 15.6232 1.01876L9.47465 4.99682C9.23679 5.15082 8.92879 5.14624 8.6955 4.98538L1.7686 0.2076C0.757692 -0.489971 -0.478113 0.710003 0.188963 1.74073V1.7392Z" fill="white"/>
+    </mask>
+    <g mask="url(#a)">
+      <g filter="url(#b)"><circle cx="23.25" cy="9.74999" r="9.74999" fill="#3287FE"/></g>
+      <g filter="url(#c)"><circle cx="10.5" cy="14.25" r="9.74999" fill="#13B962"/></g>
+      <g filter="url(#d)"><circle cx="-1.50001" cy="2.24999" r="9.74999" fill="#F6BE11"/></g>
+      <g filter="url(#e)"><circle cx="12.75" cy="-1.50001" r="9.74999" fill="#FA4442"/></g>
     </g>
   </g>
   <defs>
-    <filter id="b" x="9.35" y="0.35" width="28.05" height="28.05" filterUnits="userSpaceOnUse">
-      <feGaussianBlur stdDeviation="3.325"/>
+    <filter id="b" x="-3.35" y="0" width="53.2" height="53.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+      <feGaussianBlur stdDeviation="3.5"/>
     </filter>
-    <filter id="c" x="-14.4" y="2.85" width="28.05" height="28.05" filterUnits="userSpaceOnUse">
-      <feGaussianBlur stdDeviation="3.325"/>
+    <filter id="c" x="-3.35" y="0" width="53.2" height="53.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+      <feGaussianBlur stdDeviation="3.5"/>
     </filter>
-    <filter id="d" x="-9.9" y="-6.15" width="28.05" height="28.05" filterUnits="userSpaceOnUse">
-      <feGaussianBlur stdDeviation="3.325"/>
+    <filter id="d" x="-3.35" y="0" width="53.2" height="53.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+      <feGaussianBlur stdDeviation="3.5"/>
     </filter>
-    <filter id="e" x="0.35" y="-9.9" width="28.05" height="28.05" filterUnits="userSpaceOnUse">
-      <feGaussianBlur stdDeviation="3.325"/>
+    <filter id="e" x="-3.35" y="0" width="53.2" height="53.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+      <feGaussianBlur stdDeviation="3.5"/>
     </filter>
   </defs>
 </svg>

@@ -5,10 +5,10 @@ import { authMiddleware, AuthRequest } from '../middleware/auth'
 const router = Router()
 router.use(authMiddleware)
 
-const PROXYAPI_KEY = process.env.PROXYAPI_KEY || ''
+export const PROXYAPI_KEY = process.env.PROXYAPI_KEY || ''
 const PROXYAPI_BASE = 'https://api.proxyapi.ru/openai/v1'
 
-async function callAI(messages: { role: string; content: string }[]) {
+export async function callAI(messages: { role: string; content: string }[]) {
   const response = await fetch(`${PROXYAPI_BASE}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -32,7 +32,7 @@ async function callAI(messages: { role: string; content: string }[]) {
 }
 
 router.post('/process', async (req: AuthRequest, res: Response) => {
-  const { text, history } = req.body
+  const { text, history, chatId } = req.body
   if (!text?.trim()) {
     res.status(400).json({ error: 'Text is required' })
     return
@@ -53,6 +53,21 @@ router.post('/process', async (req: AuthRequest, res: Response) => {
     WHERE cp.user_id = ?
     ORDER BY c.name ASC
   `).all(req.userId) as { id: number; name: string }[]
+
+  let opusUserId: number | undefined
+  if (chatId) {
+    const participant = db.prepare(
+      'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
+    ).get(chatId, req.userId)
+    if (!participant) {
+      res.status(403).json({ error: 'Not a participant of this chat' })
+      return
+    }
+    db.prepare('INSERT INTO messages (chat_id, sender_id, text) VALUES (?, ?, ?)')
+      .run(chatId, req.userId, text.trim())
+    const opus = db.prepare('SELECT id FROM users WHERE email = ?').get('opus@ai.local') as { id: number } | undefined
+    opusUserId = opus?.id
+  }
 
   const chatDetails = chats.map(c => {
     const otherUser = db.prepare(`
@@ -136,6 +151,12 @@ ${chatListStr}
       result = JSON.parse(aiResponse)
     } catch {
       result = { action: 'reply', response: aiResponse }
+    }
+
+    if (chatId && opusUserId) {
+      const responseText = result.response || aiResponse
+      db.prepare('INSERT INTO messages (chat_id, sender_id, text) VALUES (?, ?, ?)')
+        .run(chatId, opusUserId, responseText)
     }
 
     if (result.action === 'send' && Array.isArray(result.chats)) {

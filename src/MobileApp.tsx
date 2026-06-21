@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  MessageSquare, User, Plus, Search, ArrowUp,
+  MessageSquare, User, Users, Plus, Search, ArrowUp, Reply,
   Copy, Trash2, Settings, Pencil, Phone,
   ChevronLeft, MoreVertical, Camera, Image, File, X,
   ChevronRight, Mail, AtSign,
-  Globe, Eye, Volume2, HardDrive, Download, AlignLeft, Clock,
-  Pin, Folder, Check
+  Globe, Eye, Volume2, AlignLeft, Clock,
+  Pin, Folder, Check, LogOut, BarChart3
 } from 'lucide-react'
 import { t, langName, p } from './i18n'
 import './MobileApp.css'
@@ -26,12 +26,35 @@ interface Folder {
   chats: number[]
 }
 
+interface PollOption {
+  id: number
+  text: string
+  votes: number
+}
+
+interface Poll {
+  id: number
+  question: string
+  createdBy: number
+  options: PollOption[]
+  totalVotes: number
+  userVote: number | null
+}
+
 interface Message {
   id: number
   sender: 'me' | 'them'
   text: string
   time: string
   senderName?: string
+  replyToId?: number
+  replyText?: string
+  replyAttachmentUrl?: string
+  replyAttachmentType?: string
+  viaOpus?: boolean
+  attachmentUrl?: string
+  attachmentType?: string
+  pollId?: number
 }
 
 interface UserData {
@@ -49,10 +72,11 @@ const API = '/api'
 
 function api(path: string, options?: RequestInit) {
   const token = localStorage.getItem('token')
+  const isFormData = options?.body instanceof FormData
   return fetch(`${API}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers,
     },
@@ -73,12 +97,62 @@ function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () =>
   )
 }
 
+function AuthLogo({ size = 40 }: { size?: number }) {
+  const w = size
+  const h = Math.round(size * 0.58)
+  return (
+    <svg width={w} height={h} viewBox="0 0 24 14" fill="none">
+      <mask id="auth_logo_mask" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="14">
+        <path d="M0.188963 1.7392L6.82464 11.9946C7.16161 12.5153 7.85613 12.664 8.37683 12.327L14.5238 8.34973C14.7617 8.19573 15.0697 8.2003 15.303 8.36116L22.2314 13.1397C23.2423 13.8365 24.4781 12.6373 23.811 11.6066L17.1746 1.35116C16.8376 0.830456 16.1431 0.681795 15.6232 1.01876L9.47465 4.99682C9.23679 5.15082 8.92879 5.14624 8.6955 4.98538L1.7686 0.2076C0.757692 -0.489971 -0.478113 0.710003 0.188963 1.74073V1.7392Z" fill="url(#auth_logo_grad)"/>
+      </mask>
+      <g mask="url(#auth_logo_mask)">
+        <g filter="url(#auth_logo_f0)"><circle cx="23.25" cy="9.75" r="9.75" fill="#3287FE"/></g>
+        <g filter="url(#auth_logo_f1)"><circle cx="10.5" cy="14.25" r="9.75" fill="#13B962"/></g>
+        <g filter="url(#auth_logo_f2)"><circle cx="-1.5" cy="2.25" r="9.75" fill="#F6BE11"/></g>
+        <g filter="url(#auth_logo_f3)"><circle cx="12.75" cy="-1.5" r="9.75" fill="#FA4442"/></g>
+      </g>
+      <defs>
+        <filter id="auth_logo_f0" x="6.15" y="-7.35" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+          <feFlood floodOpacity="0" result="BackgroundImageFix"/>
+          <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+          <feGaussianBlur stdDeviation="2.4" result="effect1_foregroundBlur_1173_79"/>
+        </filter>
+        <filter id="auth_logo_f1" x="-6.6" y="-2.85" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+          <feFlood floodOpacity="0" result="BackgroundImageFix"/>
+          <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+          <feGaussianBlur stdDeviation="2.4" result="effect1_foregroundBlur_1173_79"/>
+        </filter>
+        <filter id="auth_logo_f2" x="-18.6" y="-14.85" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+          <feFlood floodOpacity="0" result="BackgroundImageFix"/>
+          <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+          <feGaussianBlur stdDeviation="2.4" result="effect1_foregroundBlur_1173_79"/>
+        </filter>
+        <filter id="auth_logo_f3" x="-4.35" y="-18.6" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
+          <feFlood floodOpacity="0" result="BackgroundImageFix"/>
+          <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+          <feGaussianBlur stdDeviation="2.4" result="effect1_foregroundBlur_1173_79"/>
+        </filter>
+        <linearGradient id="auth_logo_grad" x1="12" y1="0" x2="12" y2="13.347" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#E20736"/><stop offset="1" stopColor="#BEE000"/>
+        </linearGradient>
+      </defs>
+    </svg>
+  )
+}
+
 function MobileApp() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'))
   const [user, setUser] = useState<UserData | null>(null)
   const [isLoggedIn, setIsLoggedIn] = useState(!!token)
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
-  const [authForm, setAuthForm] = useState({ name: '', surname: '', email: '', password: '' })
+  type MobileAuthMode = 'welcome' | 'login' | 'register-email' | 'register-info'
+  const [authMode, setAuthMode] = useState<MobileAuthMode>('welcome')
+  const [authSheetClosing, setAuthSheetClosing] = useState(false)
+  const sheetRef = useRef<HTMLDivElement>(null)
+  const dragState = useRef({ startY: 0, dragging: false })
+  const [authForm, setAuthForm] = useState({ email: '', password: '', firstName: '', lastName: '' })
+  const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+  const authFileInputRef = useRef<HTMLInputElement>(null)
 
   const [tab, setTab] = useState<'chats' | 'opus' | 'profile'>('chats')
   const [chatView, setChatView] = useState<'list' | 'thread' | 'contact'>('list')
@@ -88,11 +162,17 @@ function MobileApp() {
   const [messages, setMessages] = useState<Message[]>([])
   const [chatInputTexts, setChatInputTexts] = useState<Record<number, string>>({})
   const [contactProfile, setContactProfile] = useState<UserData | null>(null)
+  const [viewedUser, setViewedUser] = useState<UserData | null>(null)
+  const [contacts, setContacts] = useState<UserData[]>([])
+  const [mentionMenu, setMentionMenu] = useState<{ chatId: number; query: string } | null>(null)
+  const [replyTo, setReplyTo] = useState<{ messageId: number; text: string; attachmentUrl?: string; attachmentType?: string } | null>(null)
+  const [pendingAttachments, setPendingAttachments] = useState<{ url: string; type: string; name: string }[]>([])
   const [folders, setFolders] = useState<Folder[]>([])
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null)
   const [folderSheet, setFolderSheet] = useState<{ chatId: number } | null>(null)
   const [folderContextMenu, setFolderContextMenu] = useState<{ folderId: number } | null>(null)
   const [folderMenuSheet, setFolderMenuSheet] = useState(false)
+  const [opusMenuSheet, setOpusMenuSheet] = useState(false)
   const [folderEditOpen, setFolderEditOpen] = useState(false)
   const [folderEditNames, setFolderEditNames] = useState<Record<number, string>>({})
   const [folderManageView, setFolderManageView] = useState<{ folderId: number } | null>(null)
@@ -102,7 +182,7 @@ function MobileApp() {
 
   const [inputText, setInputText] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
-  const [aiConversation, setAiConversation] = useState<{ role: 'user' | 'ai'; text: string }[]>([])
+  const [aiConversation, setAiConversation] = useState<{ role: 'user' | 'ai'; text: string; time?: string }[]>([])
 
   const handleRefresh = () => {
     api('/chats').then(setChats)
@@ -112,6 +192,99 @@ function MobileApp() {
       setEditProfile({ username: u.username || '', phone: u.phone || '', bio: u.bio || '' })
     })
   }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    setToken(null)
+    setIsLoggedIn(false)
+    setUser(null)
+    setProfileView('profile')
+    setTab('chats')
+    setChatView('list')
+  }
+
+  const openAvatarAnim = useCallback(() => {
+    const original = profileAvatarRef.current
+    if (!original || !user?.avatar) return
+    const rect = original.getBoundingClientRect()
+
+    const overlay = document.createElement('div')
+    overlay.className = 'avatar-expand-overlay'
+    document.body.appendChild(overlay)
+    void overlay.offsetWidth
+    overlay.classList.add('open')
+
+    const clone = original.cloneNode(true) as HTMLElement
+    clone.style.position = 'fixed'
+    clone.style.top = `${rect.top}px`
+    clone.style.left = `${rect.left}px`
+    clone.style.width = `${rect.width}px`
+    clone.style.height = `${rect.height}px`
+    clone.style.margin = '0'
+    clone.style.zIndex = '10000'
+    clone.style.transition = 'none'
+    document.body.appendChild(clone)
+
+    const dot = clone.querySelector('.mobile-profile-status-dot')
+    if (dot) dot.remove()
+
+    clone.addEventListener('click', closeAvatarAnim)
+    overlay.addEventListener('click', closeAvatarAnim)
+
+    original.style.opacity = '0'
+    original.style.transition = 'opacity 0.1s ease'
+
+    const targetSize = Math.min(window.innerWidth * 0.8, window.innerHeight * 0.6, 400)
+    const scale = targetSize / rect.width
+    const deltaX = window.innerWidth / 2 - (rect.left + rect.width / 2)
+    const deltaY = window.innerHeight / 2 - (rect.top + rect.height / 2)
+
+    clone.animate([
+      { transform: 'translate(0,0) scale(1)' },
+      { transform: `translate(${deltaX}px, ${deltaY}px) scale(${scale})` }
+    ], {
+      duration: 500,
+      easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+      fill: 'forwards'
+    })
+
+    avatarCloneRef.current = { clone, original, overlay }
+    setAvatarOpen(true)
+  }, [user?.avatar])
+
+  const closeAvatarAnim = useCallback(() => {
+    const animData = avatarCloneRef.current
+    if (!animData) return
+    const { clone, original, overlay } = animData
+    avatarCloneRef.current = null
+
+    const rect = original.getBoundingClientRect()
+    const targetSize = Math.min(window.innerWidth * 0.8, window.innerHeight * 0.6, 400)
+    const scale = targetSize / rect.width
+    const deltaX = window.innerWidth / 2 - (rect.left + rect.width / 2)
+    const deltaY = window.innerHeight / 2 - (rect.top + rect.height / 2)
+
+    clone.getAnimations().forEach(a => a.cancel())
+
+    const anim = clone.animate([
+      { transform: `translate(${deltaX}px, ${deltaY}px) scale(${scale})` },
+      { transform: 'translate(0,0) scale(1)' }
+    ], {
+      duration: 400,
+      easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+      fill: 'forwards'
+    })
+
+    if (overlay) overlay.classList.remove('open')
+
+    anim.onfinish = () => {
+      clone.remove()
+      if (overlay) overlay.remove()
+      original.style.opacity = ''
+      original.style.transition = ''
+      setAvatarOpen(false)
+    }
+  }, [])
 
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<UserData[]>([])
@@ -134,10 +307,17 @@ function MobileApp() {
   const [attachMenu, setAttachMenu] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ messageId: number } | null>(null)
   const [chatContextMenu, setChatContextMenu] = useState<{ chatId: number } | null>(null)
+  const [threadMenu, setThreadMenu] = useState<{ x: number; y: number } | null>(null)
+  const [clearChatSubmenu, setClearChatSubmenu] = useState(false)
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null)
+  const [avatarOpen, setAvatarOpen] = useState(false)
+  const profileAvatarRef = useRef<HTMLDivElement>(null)
+  const avatarCloneRef = useRef<{ clone: HTMLElement; original: HTMLElement; overlay: HTMLDivElement } | null>(null)
   const [closingThread, setClosingThread] = useState(false)
   const [closingContact, setClosingContact] = useState(false)
   const [closingSheet, setClosingSheet] = useState<string | null>(null)
+  const [toast, setToast] = useState<string | null>(null)
+  const [toastClosing, setToastClosing] = useState(false)
 
   const closeSheet = (type: string) => {
     if (closingSheet) return
@@ -146,10 +326,13 @@ function MobileApp() {
       setAttachMenu(false)
       setContextMenu(null)
       setChatContextMenu(null)
+      setThreadMenu(null)
+      setClearChatSubmenu(false)
       setFolderSheet(null)
       setFolderContextMenu(null)
       setOptionPicker(null)
       setFolderMenuSheet(false)
+      setOpusMenuSheet(false)
       setAddChatsSheet(null)
       setClosingSheet(null)
     }, 200)
@@ -158,16 +341,20 @@ function MobileApp() {
   const closeSheetImmediate = () => {
     setAttachMenu(false)
     setContextMenu(null)
+    setThreadMenu(null)
+    setClearChatSubmenu(false)
     setChatContextMenu(null)
     setFolderSheet(null)
     setFolderContextMenu(null)
     setOptionPicker(null)
     setFolderMenuSheet(false)
+    setOpusMenuSheet(false)
     setAddChatsSheet(null)
     setClosingSheet(null)
   }
 
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const chatInputRefs = useRef<Record<number, HTMLInputElement | null>>({})
   const tabBarRef = useRef<HTMLDivElement>(null)
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const [tabIndicator, setTabIndicator] = useState({ left: 0, width: 0 })
@@ -253,7 +440,7 @@ function MobileApp() {
 
   useEffect(() => {
     updateIndicator(tab)
-  }, [tab, updateIndicator])
+  }, [tab, updateIndicator, isLoggedIn])
   const avatarFileRef = useRef<HTMLInputElement>(null)
   const aiMessagesRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -274,6 +461,11 @@ function MobileApp() {
     emailPrivacy: 'Everyone',
     bioPrivacy: 'Everyone',
   })
+
+  const [pollModalOpen, setPollModalOpen] = useState(false)
+  const [pollQuestion, setPollQuestion] = useState('')
+  const [pollOptions, setPollOptions] = useState<string[]>(['', ''])
+  const [pollsCache, setPollsCache] = useState<Record<number, Poll>>({})
 
   useEffect(() => {
     if (token) {
@@ -300,6 +492,7 @@ function MobileApp() {
     if (isLoggedIn) {
       api('/chats').then(setChats)
       api('/folders').then(setFolders)
+      api('/users/contacts').then(setContacts)
     }
   }, [isLoggedIn])
 
@@ -307,8 +500,35 @@ function MobileApp() {
     if (activeChatId) {
       api(`/chats/${activeChatId}/messages`).then(setMessages)
       api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
+      api(`/polls/chat/${activeChatId}`).then((polls: Poll[]) => {
+        const cacheUpdate: Record<number, Poll> = {}
+        polls.forEach(p => { cacheUpdate[p.id] = p })
+        setPollsCache(prev => ({ ...prev, ...cacheUpdate }))
+      }).catch(() => {})
     }
+    setMentionMenu(null)
+    setViewedUser(null)
   }, [activeChatId])
+
+  const opusLoadedRef = useRef(false)
+  useEffect(() => {
+    if (tab === 'opus' && chats.length > 0 && !opusLoadedRef.current) {
+      opusLoadedRef.current = true
+      const opusChatId = chats.find(c => c.name === 'Opus')?.id
+      if (opusChatId) {
+        api(`/chats/${opusChatId}/messages`).then((msgs: any[]) => {
+          setAiConversation(msgs.map(m => ({
+            role: (m.sender === 'me' ? 'user' : 'ai') as 'user' | 'ai',
+            text: m.text,
+            time: m.time
+          })))
+        }).catch(() => {})
+      }
+    }
+    if (tab !== 'opus') {
+      opusLoadedRef.current = false
+    }
+  }, [tab, chats])
 
   useEffect(() => {
     if (firstOpusEntry) {
@@ -324,13 +544,18 @@ function MobileApp() {
   }, [aiConversation, aiLoading])
 
   useEffect(() => {
-    if (searchOpen) {
-      setTimeout(() => searchInputRef.current?.focus(), 100)
-    } else {
+    if (!searchOpen) {
       setSearchQuery('')
       setSearchResults([])
     }
   }, [searchOpen])
+
+  useEffect(() => {
+    if (tab !== 'chats' || chatView !== 'list') {
+      setSearchOpen(false)
+      setClosingSearch(false)
+    }
+  }, [tab, chatView])
 
   useEffect(() => {
     if (searchOpen && searchQuery.trim()) {
@@ -350,17 +575,39 @@ function MobileApp() {
     return () => document.removeEventListener('keydown', onKey)
   }, [fullscreenImage])
 
+  useEffect(() => {
+    if (!avatarOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeAvatarAnim() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [avatarOpen, closeAvatarAnim])
+
+  useEffect(() => {
+    if (!threadMenu) return
+    const handleClick = () => { setThreadMenu(null); setClearChatSubmenu(false) }
+    const handleScroll = () => { setThreadMenu(null); setClearChatSubmenu(false) }
+    document.addEventListener('click', handleClick)
+    document.addEventListener('scroll', handleScroll, true)
+    return () => {
+      document.removeEventListener('click', handleClick)
+      document.removeEventListener('scroll', handleScroll, true)
+    }
+  }, [threadMenu])
+
   const activeChat = chats.find(c => c.id === activeChatId)
+  const hasEditChanges = editProfile.username !== (user?.username || '') || editProfile.phone !== (user?.phone || '') || editProfile.bio !== (user?.bio || '')
 
   const handleOpenChat = (chatId: number) => {
     setActiveChatId(chatId)
     setChatView('thread')
     setTab('chats')
+    setMentionMenu(null)
   }
 
   const handleCloseChat = () => {
     if (closingThread) return
     setClosingThread(true)
+    setMentionMenu(null)
     setTimeout(() => {
       setChatView('list')
       setActiveChatId(null)
@@ -375,38 +622,186 @@ function MobileApp() {
     setTimeout(() => {
       setChatView('thread')
       setClosingContact(false)
+      setViewedUser(null)
     }, 280)
   }
 
   const handleSendMessage = (chatId: number) => {
     const text = chatInputTexts[chatId]?.trim()
-    if (!text) return
+    if (!text && pendingAttachments.length === 0) return
+    setMentionMenu(null)
 
-    api(`/chats/${chatId}/messages`, { method: 'POST', body: JSON.stringify({ text }) }).then((msg) => {
-      setMessages(prev => [...prev, msg])
+    const atts = pendingAttachments
+    const body: any = { text, replyTo: replyTo?.messageId }
+    if (atts.length > 0) {
+      body.attachmentUrl = atts[0].url
+      body.attachmentType = atts[0].type
+    }
+
+    api(`/chats/${chatId}/messages`, { method: 'POST', body: JSON.stringify(body) }).then((msg: any) => {
+      if (msg.messages && Array.isArray(msg.messages)) {
+        setMessages(prev => [...prev, ...msg.messages])
+      } else {
+        setMessages(prev => [...prev, msg])
+      }
       setChatInputTexts(prev => ({ ...prev, [chatId]: '' }))
+      setReplyTo(null)
+      setPendingAttachments([])
+      const lastMsg = msg.messages ? msg.messages[msg.messages.length - 1] : msg
       setChats(prev => prev.map(c =>
-        c.id === chatId ? { ...c, lastMessage: text, time: msg.time } : c
+        c.id === chatId ? { ...c, lastMessage: lastMsg.text || lastMsg.attachmentType || 'Attachment', time: lastMsg.time } : c
       ))
+      const remaining = atts.slice(1)
+      if (remaining.length > 0) {
+        remaining.forEach((att, i) => {
+          setTimeout(() => {
+            api(`/chats/${chatId}/messages`, { method: 'POST', body: JSON.stringify({ text: '', attachmentUrl: att.url, attachmentType: att.type }) }).then((m: any) => {
+              setMessages(prev => {
+                const newMsgs = m.messages ? m.messages : [m]
+                return [...prev, ...newMsgs]
+              })
+            })
+          }, (i + 1) * 200)
+        })
+      }
     })
+  }
+
+  const handleCreatePoll = () => {
+    if (!activeChatId || !pollQuestion.trim() || pollOptions.filter(o => o.trim()).length < 2) return
+    api('/polls', {
+      method: 'POST',
+      body: JSON.stringify({
+        chatId: activeChatId,
+        question: pollQuestion.trim(),
+        options: pollOptions.filter(o => o.trim()),
+      })
+    }).then((res: any) => {
+      const newPoll: Poll = {
+        id: res.pollId,
+        question: res.question,
+        createdBy: res.createdBy,
+        options: res.options.map((o: any) => ({ id: o.id, text: o.text, votes: 0 })),
+        totalVotes: 0,
+        userVote: null,
+      }
+      setPollsCache(prev => ({ ...prev, [newPoll.id]: newPoll }))
+      api(`/chats/${activeChatId}/messages`).then((msgs: any[]) => {
+        setMessages(msgs)
+        const lastMsg = msgs[msgs.length - 1]
+        if (lastMsg) {
+          setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, lastMessage: 'Poll', time: lastMsg.time } : c))
+        }
+      })
+      setPollModalOpen(false)
+      setPollQuestion('')
+      setPollOptions(['', ''])
+    }).catch(err => alert(err.message))
+  }
+
+  const loadPoll = (pollId: number) => {
+    if (pollsCache[pollId]) return
+    if (!activeChatId) return
+    api(`/polls/chat/${activeChatId}`).then((polls: Poll[]) => {
+      const cacheUpdate: Record<number, Poll> = {}
+      polls.forEach(p => { cacheUpdate[p.id] = p })
+      setPollsCache(prev => ({ ...prev, ...cacheUpdate }))
+    }).catch(() => {})
+  }
+
+  const handleVote = (pollId: number, optionId: number) => {
+    api(`/polls/${pollId}/vote`, { method: 'POST', body: JSON.stringify({ optionId }) }).then((res: any) => {
+      setPollsCache(prev => ({
+        ...prev,
+        [pollId]: {
+          ...prev[pollId],
+          options: res.options,
+          totalVotes: res.totalVotes,
+          userVote: res.userVote,
+        }
+      }))
+    }).catch(err => alert(err.message))
   }
 
   const handleChatInputChange = (chatId: number, value: string) => {
     setChatInputTexts(prev => ({ ...prev, [chatId]: value }))
+    const input = chatInputRefs.current[chatId]
+    if (!input) return
+    const cursorPos = input.selectionStart || 0
+    const textBeforeCursor = value.slice(0, cursorPos)
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@')
+    if (lastAtIndex === -1) {
+      setMentionMenu(null)
+      return
+    }
+    const afterAt = textBeforeCursor.slice(lastAtIndex + 1)
+    if (afterAt.includes(' ') || afterAt.includes('\n')) {
+      setMentionMenu(null)
+      return
+    }
+    setMentionMenu({ chatId, query: afterAt.toLowerCase() })
+  }
+
+  const insertMention = (chatId: number, username: string) => {
+    const input = chatInputRefs.current[chatId]
+    if (!input) return
+    const value = chatInputTexts[chatId] || ''
+    const cursorPos = input.selectionStart || 0
+    const textBeforeCursor = value.slice(0, cursorPos)
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@')
+    if (lastAtIndex === -1) return
+    const before = value.slice(0, lastAtIndex)
+    const after = value.slice(cursorPos)
+    const newValue = before + '@' + username + ' ' + after
+    setChatInputTexts(prev => ({ ...prev, [chatId]: newValue }))
+    setMentionMenu(null)
+    setTimeout(() => {
+      const newPos = lastAtIndex + username.length + 2
+      input.focus()
+      input.setSelectionRange(newPos, newPos)
+    }, 0)
+  }
+
+  const openChatWithUser = (username: string) => {
+    if (username.toLowerCase() === 'opus') {
+      setTab('opus')
+      return
+    }
+    api('/chats/find-or-create', { method: 'POST', body: JSON.stringify({ username }) }).then((chat: any) => {
+      setChats(prev => {
+        if (prev.find(c => c.id === chat.id)) return prev
+        return [chat, ...prev]
+      })
+      setActiveChatId(chat.id)
+      setChatView('thread')
+    }).catch(() => {})
+  }
+
+  const renderMessageText = (text: string) => {
+    const parts = text.split(/(@[a-zA-Z0-9_.]+)/g)
+    return parts.map((part, i) => {
+      if (part.startsWith('@')) {
+        const username = part.slice(1)
+        return <span key={i} className="mention-link" onClick={() => openChatWithUser(username)}>{part}</span>
+      }
+      return <span key={i}>{part}</span>
+    })
   }
 
   const handleAiSend = async () => {
     const text = inputText.trim()
     if (!text || aiLoading) return
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     setInputText('')
-    setAiConversation(prev => [...prev, { role: 'user', text }])
+    setAiConversation(prev => [...prev, { role: 'user', text, time: now }])
     setAiLoading(true)
     try {
+      const opusChatId = chats.find(c => c.name === 'Opus')?.id
       const result = await api('/ai/process', {
         method: 'POST',
-        body: JSON.stringify({ text, history: aiConversation })
+        body: JSON.stringify({ text, history: aiConversation, chatId: opusChatId })
       })
-      setAiConversation(prev => [...prev, { role: 'ai', text: result.response }])
+      setAiConversation(prev => [...prev, { role: 'ai', text: result.response, time: now }])
     } catch {
       setAiConversation(prev => [...prev, { role: 'ai', text: 'Произошла ошибка. Попробуйте ещё раз.' }])
     } finally {
@@ -421,10 +816,28 @@ function MobileApp() {
     setContextMenu(null)
   }
 
+  const copyField = (label: string, value: string) => {
+    navigator.clipboard.writeText(value)
+    setToastClosing(false)
+    setToast(`${label} copied`)
+    setTimeout(() => setToastClosing(true), 1200)
+    setTimeout(() => { setToast(null); setToastClosing(false) }, 1500)
+  }
+
   const deleteMessage = () => {
     if (!contextMenu) return
     setMessages(prev => prev.filter(m => m.id !== contextMenu.messageId))
     setContextMenu(null)
+  }
+
+  const clearChat = (chatId: number, forBoth: boolean) => {
+    api(`/chats/${chatId}/messages`, { method: 'DELETE', body: JSON.stringify({ forBoth }) }).then(() => {
+      if (activeChatId === chatId) {
+        setMessages([])
+        setChats(prev => prev.map(c => c.id === chatId ? { ...c, lastMessage: '', time: '' } : c))
+      }
+      closeSheetImmediate()
+    }).catch(() => {})
   }
 
   const handleChatLongPress = (chatId: number) => {
@@ -498,10 +911,24 @@ function MobileApp() {
     }
   }
 
-  const handleTabLongPress = () => {
+  const handleTabLongPress = (tabKey: string) => {
     tabLongPressed.current = true
     touchDrag.current = null
-    setFolderMenuSheet(true)
+    if (tabKey === 'chats') {
+      setFolderMenuSheet(true)
+    } else if (tabKey === 'opus') {
+      if (aiConversation.length === 0) return
+      setOpusMenuSheet(true)
+    }
+  }
+
+  const handleClearOpusChat = () => {
+    const opusChatId = chats.find(c => c.name === 'Opus')?.id
+    if (opusChatId) {
+      api(`/chats/${opusChatId}/messages`, { method: 'DELETE' }).catch(() => {})
+    }
+    setAiConversation([])
+    closeSheetImmediate()
   }
 
   const toggleChatInFolder = (folderId: number, chatId: number, add: boolean) => {
@@ -552,91 +979,258 @@ function MobileApp() {
   }
 
   if (!isLoggedIn) {
-    return (
-      <div className="mobile-auth-page">
-        <div className="mobile-auth-container">
-          <div className="mobile-auth-header">
-            <div className="mobile-auth-logo">
-              <svg width="36" height="21" viewBox="0 0 24 14" fill="none">
-                <mask id="mobile_auth_mask" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="14">
-                  <path d="M0.188963 1.7392L6.82464 11.9946C7.16161 12.5153 7.85613 12.664 8.37683 12.327L14.5238 8.34973C14.7617 8.19573 15.0697 8.2003 15.303 8.36116L22.2314 13.1397C23.2423 13.8365 24.4781 12.6373 23.811 11.6066L17.1746 1.35116C16.8376 0.830456 16.1431 0.681795 15.6232 1.01876L9.47465 4.99682C9.23679 5.15082 8.92879 5.14624 8.6955 4.98538L1.7686 0.2076C0.757692 -0.489971 -0.478113 0.710003 0.188963 1.74073V1.7392Z" fill="url(#mobile_auth_grad)"/>
-                </mask>
-                <g mask="url(#mobile_auth_mask)">
-                  <g filter="url(#mobile_auth_f0)"><circle cx="23.25" cy="9.75" r="9.75" fill="#3287FE"/></g>
-                  <g filter="url(#mobile_auth_f1)"><circle cx="10.5" cy="14.25" r="9.75" fill="#13B962"/></g>
-                  <g filter="url(#mobile_auth_f2)"><circle cx="-1.5" cy="2.25" r="9.75" fill="#F6BE11"/></g>
-                  <g filter="url(#mobile_auth_f3)"><circle cx="12.75" cy="-1.5" r="9.75" fill="#FA4442"/></g>
-                </g>
-                <defs>
-                  <filter id="mobile_auth_f0" x="6.15" y="-7.35" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
-                    <feFlood floodOpacity="0" result="BackgroundImageFix"/>
-                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
-                    <feGaussianBlur stdDeviation="3.675" result="effect1_foregroundBlur_1173_79"/>
-                  </filter>
-                  <filter id="mobile_auth_f1" x="-6.6" y="-2.85" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
-                    <feFlood floodOpacity="0" result="BackgroundImageFix"/>
-                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
-                    <feGaussianBlur stdDeviation="3.675" result="effect1_foregroundBlur_1173_79"/>
-                  </filter>
-                  <filter id="mobile_auth_f2" x="-18.6" y="-14.85" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
-                    <feFlood floodOpacity="0" result="BackgroundImageFix"/>
-                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
-                    <feGaussianBlur stdDeviation="3.675" result="effect1_foregroundBlur_1173_79"/>
-                  </filter>
-                  <filter id="mobile_auth_f3" x="-4.35" y="-18.6" width="34.2" height="34.2" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB">
-                    <feFlood floodOpacity="0" result="BackgroundImageFix"/>
-                    <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
-                    <feGaussianBlur stdDeviation="3.675" result="effect1_foregroundBlur_1173_79"/>
-                  </filter>
-                  <linearGradient id="mobile_auth_grad" x1="12" y1="0" x2="12" y2="13.347" gradientUnits="userSpaceOnUse">
-                    <stop stopColor="#E20736"/><stop offset="1" stopColor="#BEE000"/>
-                  </linearGradient>
-                </defs>
-              </svg>
-            </div>
-            <h1 className="mobile-auth-title">Surf</h1>
-            <p className="mobile-auth-subtitle">{authMode === 'login' ? t('welcomeBack', settings.language) : t('createAccount', settings.language)}</p>
+    const resetAuth = () => {
+      setAuthForm({ email: '', password: '', firstName: '', lastName: '' })
+      setAvatarFile(null)
+      setAvatarPreview(null)
+    }
+
+    const closeSheet = () => {
+      setAuthSheetClosing(true)
+      setTimeout(() => {
+        setAuthMode('welcome')
+        setAuthSheetClosing(false)
+      }, 300)
+    }
+
+    const handleDragStart = (clientY: number) => {
+      dragState.current = { startY: clientY, dragging: true }
+    }
+
+    const handleDragMove = (clientY: number) => {
+      if (!dragState.current.dragging) return
+      const delta = (clientY - dragState.current.startY) * 0.5
+      if (delta > 0 && sheetRef.current) {
+        sheetRef.current.style.transition = 'none'
+        sheetRef.current.style.transform = `translateY(${delta}px)`
+      }
+    }
+
+    const handleDragEnd = () => {
+      if (!dragState.current.dragging) return
+      dragState.current.dragging = false
+      const el = sheetRef.current
+      if (!el) return
+      const match = el.style.transform.match(/translateY\(([\d.]+)px\)/)
+      const offset = match ? parseFloat(match[1]) : 0
+      if (offset > 50) {
+        el.style.transition = ''
+        el.style.transform = ''
+        closeSheet()
+      } else {
+        el.style.transition = 'transform 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+        el.style.transform = 'translateY(0px)'
+        setTimeout(() => {
+          if (el) {
+            el.style.transition = ''
+            el.style.transform = ''
+          }
+        }, 200)
+      }
+    }
+
+    const handleAvatarSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+      setAvatarFile(file)
+      const reader = new FileReader()
+      reader.onload = (ev) => setAvatarPreview(ev.target?.result as string)
+      reader.readAsDataURL(file)
+    }
+
+    if (authMode === 'register-info') {
+      return (
+        <div className="mobile-auth-page mobile-auth-info-page">
+          <button
+            className="mobile-auth-back"
+            onClick={() => setAuthMode('register-email')}
+            aria-label="Back"
+          >
+            <ChevronLeft size={22} />
+          </button>
+          <div className="mobile-auth-info-content">
+            <button
+              className="mobile-auth-avatar"
+              onClick={() => authFileInputRef.current?.click()}
+            >
+              {avatarPreview ? (
+                <img src={avatarPreview} alt="" />
+              ) : (
+                <Camera size={32} />
+              )}
+              <input
+                ref={authFileInputRef}
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={handleAvatarSelect}
+              />
+            </button>
+            <h1 className="mobile-auth-info-title">{t('yourInfo', settings.language)}</h1>
+            <p className="mobile-auth-info-subtitle">{t('enterNameAndPhoto', settings.language)}</p>
+            <form
+              className="mobile-auth-info-form"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (!authForm.firstName.trim()) return
+                api('/auth/register', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    name: authForm.firstName,
+                    surname: authForm.lastName,
+                    email: authForm.email,
+                    password: authForm.password,
+                  })
+                }).then(async (data) => {
+                  if (avatarFile) {
+                    const formData = new FormData()
+                    formData.append('avatar', avatarFile)
+                    await fetch('/api/upload/avatar', {
+                      method: 'POST',
+                      headers: { Authorization: `Bearer ${data.token}` },
+                      body: formData,
+                    }).catch(() => {})
+                  }
+                  localStorage.setItem('token', data.token)
+                  setToken(data.token)
+                  setUser(data.user)
+                  setIsLoggedIn(true)
+                  setEditProfile({ username: data.user.username || '', phone: data.user.phone || '', bio: data.user.bio || '' })
+                }).catch(err => alert(err.message))
+              }}
+            >
+              <div className="mobile-auth-field">
+                <label className="mobile-auth-label">{t('firstName', settings.language)}</label>
+                <input
+                  className="mobile-auth-input"
+                  placeholder={t('firstName', settings.language)}
+                  value={authForm.firstName}
+                  onChange={(e) => setAuthForm(f => ({ ...f, firstName: e.target.value }))}
+                  required
+                />
+              </div>
+              <div className="mobile-auth-field">
+                <label className="mobile-auth-label">{t('lastName', settings.language)}</label>
+                <input
+                  className="mobile-auth-input"
+                  placeholder={t('lastName', settings.language)}
+                  value={authForm.lastName}
+                  onChange={(e) => setAuthForm(f => ({ ...f, lastName: e.target.value }))}
+                />
+              </div>
+              <button className="mobile-auth-submit" type="submit">{t('continue', settings.language)}</button>
+            </form>
           </div>
-          <form className="mobile-auth-form" onSubmit={(e) => {
-            e.preventDefault()
-            const endpoint = authMode === 'login' ? '/auth/login' : '/auth/register'
-            api(endpoint, { method: 'POST', body: JSON.stringify(authForm) }).then(data => {
-              localStorage.setItem('token', data.token)
-              setToken(data.token)
-              setUser(data.user)
-              setIsLoggedIn(true)
-              setEditProfile({ username: data.user.username || '', phone: data.user.phone || '', bio: data.user.bio || '' })
-            }).catch(err => alert(err.message))
-          }}>
-            {authMode === 'register' && (
-              <>
-                <div className="mobile-auth-field">
-                  <label className="mobile-auth-label">{t('name', settings.language)}</label>
-                  <input className="mobile-auth-input" placeholder={t('name', settings.language)} value={authForm.name} onChange={(e) => setAuthForm(f => ({ ...f, name: e.target.value }))} required />
-                </div>
-                <div className="mobile-auth-field">
-                  <label className="mobile-auth-label">{t('surname', settings.language)}</label>
-                  <input className="mobile-auth-input" placeholder={t('surname', settings.language)} value={authForm.surname} onChange={(e) => setAuthForm(f => ({ ...f, surname: e.target.value }))} required />
-                </div>
-              </>
-            )}
+        </div>
+      )
+    }
+
+    const isLogin = authMode === 'login'
+    const agreeText = t('byTappingAgree', settings.language).replace('{action}', isLogin ? t('continue', settings.language) : t('signUp', settings.language))
+
+    if (authMode === 'welcome' && !authSheetClosing) {
+      return (
+        <div className="mobile-auth-page">
+          <div className="mobile-auth-welcome">
+            <div className="mobile-auth-welcome-logo">
+              <AuthLogo size={72} />
+            </div>
+          </div>
+          <div className="mobile-auth-welcome-actions">
+            <button
+              className="mobile-auth-btn mobile-auth-btn-primary"
+              onClick={() => { resetAuth(); setAuthMode('register-email'); setAuthSheetClosing(false) }}
+            >
+              {t('signUp', settings.language)}
+            </button>
+            <button
+              className="mobile-auth-btn mobile-auth-btn-outline"
+              onClick={() => { resetAuth(); setAuthMode('login'); setAuthSheetClosing(false) }}
+            >
+              {t('logIn', settings.language)}
+            </button>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="mobile-auth-page mobile-auth-sheet-page">
+        <div className="mobile-auth-sheet-header">
+          <AuthLogo size={48} />
+        </div>
+        <div
+          ref={sheetRef}
+          className={`mobile-auth-sheet${authSheetClosing ? ' closing' : ''}`}
+        >
+          <div
+            className="mobile-auth-sheet-drag-handle"
+            onTouchStart={(e) => handleDragStart(e.touches[0].clientY)}
+            onTouchMove={(e) => handleDragMove(e.touches[0].clientY)}
+            onTouchEnd={handleDragEnd}
+          />
+          <button
+            className="mobile-auth-sheet-close"
+            onClick={() => {
+              if (authSheetClosing) return
+              closeSheet()
+            }}
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+          <form
+            className="mobile-auth-form"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (isLogin) {
+                api('/auth/login', {
+                  method: 'POST',
+                  body: JSON.stringify({ email: authForm.email, password: authForm.password })
+                }).then(data => {
+                  localStorage.setItem('token', data.token)
+                  setToken(data.token)
+                  setUser(data.user)
+                  setIsLoggedIn(true)
+                  setEditProfile({ username: data.user.username || '', phone: data.user.phone || '', bio: data.user.bio || '' })
+                }).catch(err => alert(err.message))
+              } else {
+                setAuthMode('register-info')
+              }
+            }}
+          >
             <div className="mobile-auth-field">
               <label className="mobile-auth-label">{t('email', settings.language)}</label>
-              <input className="mobile-auth-input" type="email" placeholder={t('email', settings.language)} value={authForm.email} onChange={(e) => setAuthForm(f => ({ ...f, email: e.target.value }))} required />
+              <input
+                className="mobile-auth-input"
+                type="email"
+                placeholder="example@email.com"
+                value={authForm.email}
+                onChange={(e) => setAuthForm(f => ({ ...f, email: e.target.value }))}
+                required
+              />
             </div>
             <div className="mobile-auth-field">
               <label className="mobile-auth-label">{t('password', settings.language)}</label>
-              <input className="mobile-auth-input" type="password" placeholder="••••••••" value={authForm.password} onChange={(e) => setAuthForm(f => ({ ...f, password: e.target.value }))} required />
+              <input
+                className="mobile-auth-input"
+                type="password"
+                placeholder="••••••••••••••"
+                value={authForm.password}
+                onChange={(e) => setAuthForm(f => ({ ...f, password: e.target.value }))}
+                required
+              />
             </div>
-            <button className="mobile-auth-submit" type="submit">{authMode === 'login' ? t('logIn', settings.language) : t('createAccount', settings.language)}</button>
+            <p className="mobile-auth-terms">
+              {agreeText}{' '}
+              <span className="mobile-auth-terms-link">{t('terms', settings.language)}</span>{' '}
+              {t('and', settings.language)}{' '}
+              <span className="mobile-auth-terms-link">{t('privacyPolicy', settings.language)}</span>.
+            </p>
+            <button className="mobile-auth-submit" type="submit">
+              {isLogin ? t('continue', settings.language) : t('signUp', settings.language)}
+            </button>
           </form>
-          <p className="mobile-auth-switch">
-            {authMode === 'login' ? (
-              <>{t('dontHaveAccount', settings.language)} <button className="mobile-auth-link" onClick={() => { setAuthMode('register'); setAuthForm({ name: '', surname: '', email: '', password: '' }) }}>{t('register', settings.language)}</button></>
-            ) : (
-              <>{t('alreadyHaveAccount', settings.language)} <button className="mobile-auth-link" onClick={() => { setAuthMode('login'); setAuthForm({ name: '', surname: '', email: '', password: '' }) }}>{t('logIn', settings.language)}</button></>
-            )}
-          </p>
         </div>
       </div>
     )
@@ -728,9 +1322,10 @@ function MobileApp() {
                 )}
                 <div className="mobile-chat-list">
                   {(() => {
-                    const displayChats = activeFolderId
+                    const displayChats = (activeFolderId
                       ? chats.filter(c => folders.find(f => f.id === activeFolderId)?.chats.includes(c.id))
                       : chats
+                    ).filter(c => c.name !== 'Opus')
                     if (displayChats.length === 0) {
                       return (
                         <div className="mobile-chats-empty">
@@ -784,14 +1379,33 @@ function MobileApp() {
               </div>
               <div className="mobile-thread-actions">
                 <button className="mobile-thread-action" title={t('call', settings.language)}><Phone size={20} /></button>
-                <button className="mobile-thread-action" title={t('more', settings.language)}><MoreVertical size={20} /></button>
+                <button className="mobile-thread-action" title={t('more', settings.language)} onClick={(e) => {
+                  e.stopPropagation()
+                  if (threadMenu) { setThreadMenu(null); setClearChatSubmenu(false); return }
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  setThreadMenu({ x: rect.right, y: rect.bottom + 8 })
+                }}><MoreVertical size={20} /></button>
               </div>
             </div>
+
+            {threadMenu && (
+              <div className="context-menu" style={{ right: window.innerWidth - threadMenu.x, top: threadMenu.y, position: 'fixed', zIndex: 1000 }} onClick={(e) => e.stopPropagation()}>
+                {!clearChatSubmenu ? (
+                  <button className="context-menu-item" onClick={() => setClearChatSubmenu(true)}><Trash2 size={14} /><span>Clear chat</span></button>
+                ) : (
+                  <>
+                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, false); setClearChatSubmenu(false) }}><User size={14} /><span>Clear for me</span></button>
+                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, true); setClearChatSubmenu(false) }}><Users size={14} /><span>Clear for everyone</span></button>
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="mobile-thread-messages" onContextMenu={(e) => e.preventDefault()}>
               {messages.map(msg => (
                 <div
                   key={msg.id}
+                  id={`msg-${msg.id}`}
                   className={`mobile-msg-row ${msg.sender === 'me' ? 'sender-me' : 'sender-them'}`}
                   onClick={() => {
                     if (contextMenu) setContextMenu(null)
@@ -802,19 +1416,120 @@ function MobileApp() {
                   }}
                 >
                   <div className="mobile-msg-bubble">
-                    <div className="mobile-msg-text">{msg.text}</div>
-                    <div className="mobile-msg-time">{msg.time}</div>
+                    {msg.replyToId && (msg.replyText || msg.replyAttachmentUrl) && (
+                      <div className="mobile-msg-reply" onClick={() => { const el = document.getElementById(`msg-${msg.replyToId}`); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>
+                        <div className="mobile-msg-reply-line" />
+                        <div className="mobile-msg-reply-text">{msg.replyAttachmentUrl && !msg.replyText ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{msg.replyAttachmentType === 'image' ? <><Image size={14} /> Photo</> : <><File size={14} /> File</>}</span> : msg.replyText}</div>
+                      </div>
+                    )}
+                    {msg.attachmentUrl && (
+                      <div className="mobile-msg-attachment">
+                        {msg.attachmentType === 'image' ? (
+                          <img src={`http://localhost:3001${msg.attachmentUrl}`} alt="" className="mobile-msg-attachment-image" onClick={() => setFullscreenImage(`http://localhost:3001${msg.attachmentUrl}`)} />
+                        ) : (
+                          <a href={`http://localhost:3001${msg.attachmentUrl}`} target="_blank" rel="noopener noreferrer" className="mobile-msg-attachment-file"><File size={16} /><span>{msg.attachmentType || 'File'}</span></a>
+                        )}
+                      </div>
+                    )}
+                    {msg.pollId && (
+                      <div className="message-poll" onClick={(e) => e.stopPropagation()}>
+                        {(() => {
+                          loadPoll(msg.pollId!)
+                          const poll = pollsCache[msg.pollId!]
+                          if (!poll) return <div className="message-poll-loading">Loading poll...</div>
+                          return (
+                            <>
+                              <div className="message-poll-question"><BarChart3 size={16} style={{ marginRight: 8, opacity: 0.7 }} />{poll.question}</div>
+                              <div className="message-poll-options">
+                                {poll.options.map(opt => {
+                                  const percent = poll.totalVotes > 0 ? Math.round((opt.votes / poll.totalVotes) * 100) : 0
+                                  const isVoted = poll.userVote === opt.id
+                                  return (
+                                    <button key={opt.id} className={`message-poll-option${isVoted ? ' voted' : ''}`} onClick={() => handleVote(poll.id, opt.id)}>
+                                      <div className="message-poll-option-bar" style={{ width: `${percent}%` }} />
+                                      <span className="message-poll-option-text">{opt.text}</span>
+                                      {poll.userVote !== null && <span className="message-poll-option-percent">{percent}%</span>}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                              <div className="message-poll-footer">{poll.totalVotes} vote{poll.totalVotes !== 1 ? 's' : ''}</div>
+                            </>
+                          )
+                        })()}
+                      </div>
+                    )}
+                    <div className="mobile-msg-text">{renderMessageText(msg.text)}</div>
+                    <div className="mobile-msg-meta">
+                      <span className="mobile-msg-time">{msg.time}</span>
+                    </div>
                   </div>
                 </div>
               ))}
             </div>
 
             <div className="mobile-thread-input">
-              <div className="mobile-input-wrapper">
+              {replyTo && (
+                <div className="mobile-reply-bar">
+                  <div className="mobile-reply-line" />
+                  <div className="mobile-reply-info">
+                    <div className="mobile-reply-label">{t('reply', settings.language)}</div>
+                    <div className="mobile-reply-text">{replyTo.attachmentUrl && !replyTo.text ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{replyTo.attachmentType === 'image' ? <><Image size={14} /> Photo</> : <><File size={14} /> File</>}</span> : replyTo.text}</div>
+                  </div>
+                  <button className="mobile-reply-close" onClick={() => setReplyTo(null)}>
+                    <X size={16} />
+                  </button>
+                </div>
+              )}
+              {mentionMenu?.chatId === activeChat.id && (
+                <div className="mobile-mention-menu">
+                  {contacts
+                    .filter(c => {
+                      const q = mentionMenu.query
+                      return c.username?.toLowerCase().includes(q) ||
+                        c.name.toLowerCase().includes(q) ||
+                        c.surname?.toLowerCase().includes(q)
+                    })
+                    .slice(0, 5)
+                    .map(c => (
+                      <button
+                        key={c.id}
+                        className="mobile-mention-item"
+                        onClick={() => insertMention(activeChat.id, c.username || `${c.name}${c.surname ? ' ' + c.surname : ''}`)}
+                      >
+                        <div className="mobile-mention-avatar"><User size={16} strokeWidth={1.5} /></div>
+                        <div className="mobile-mention-info">
+                          <div className="mobile-mention-name">{c.name} {c.surname}</div>
+                          {c.username && <div className="mobile-mention-username">@{c.username}</div>}
+                        </div>
+                      </button>
+                    ))}
+                </div>
+              )}
+              {pendingAttachments.length > 0 && (
+                <div className={`mobile-pending-attachment${replyTo ? ' mobile-pending-attachment-noround' : ''}`}>
+                  {pendingAttachments.map((att, idx) => (
+                    <div key={idx} className="mobile-pending-attachment-item">
+                      {att.type === 'image' ? (
+                        <img src={`http://localhost:3001${att.url}`} alt="" className="mobile-pending-attachment-thumb" />
+                      ) : (
+                        <div className="mobile-pending-attachment-file-icon"><File size={16} /></div>
+                      )}
+                      <div className="mobile-pending-attachment-info">
+                        <span className="mobile-pending-attachment-name">{att.name}</span>
+                        <span className="mobile-pending-attachment-hint">{att.type === 'image' ? 'Photo' : 'Document'}</span>
+                      </div>
+                      <button className="mobile-pending-attachment-remove" onClick={() => setPendingAttachments(prev => prev.filter((_, i) => i !== idx))}><X size={16} /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className={`mobile-input-wrapper${replyTo ? ' has-reply' : ''}${pendingAttachments.length > 0 ? ' has-attachment' : ''}`}>
                 <button className="mobile-input-attach" onClick={() => setAttachMenu(true)}>
                   <Plus size={22} />
                 </button>
                 <input
+                  ref={el => void (chatInputRefs.current[activeChat.id] = el)}
                   type="text"
                   className="mobile-input"
                   placeholder={t('writeMessage', settings.language)}
@@ -823,7 +1538,7 @@ function MobileApp() {
                   onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(activeChat.id) }}
                 />
                 <button
-                  className={`mobile-send-btn${(chatInputTexts[activeChat.id] || '').trim() ? ' active' : ''}`}
+                  className={`mobile-send-btn${((chatInputTexts[activeChat.id] || '').trim() || pendingAttachments.length > 0) ? ' active' : ''}`}
                   onClick={() => handleSendMessage(activeChat.id)}
                 >
                   <ArrowUp size={20} />
@@ -840,21 +1555,22 @@ function MobileApp() {
               <button className="mobile-thread-back" onClick={handleCloseContact}>
                 <ChevronLeft size={24} />
               </button>
-              <div className="mobile-thread-name" style={{ marginLeft: 4 }}>{t('contact', settings.language)}</div>
+              <div className="mobile-thread-name" style={{ flex: 1, textAlign: 'center' }}>{t('contact', settings.language)}</div>
+              <div style={{ width: 44 }} />
             </div>
             <div className="mobile-profile-top">
-              <div className="mobile-profile-avatar" style={contactProfile?.avatar ? { backgroundImage: `url(${contactProfile.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}}>
-                {!contactProfile?.avatar && <User size={40} strokeWidth={1.5} />}
+              <div className="mobile-profile-avatar" style={(viewedUser || contactProfile)?.avatar ? { backgroundImage: `url(${(viewedUser || contactProfile)?.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}}>
+                {!(viewedUser || contactProfile)?.avatar && <User size={40} strokeWidth={1.5} />}
               </div>
-              <div className="mobile-profile-name">{contactProfile ? `${contactProfile.name} ${contactProfile.surname}` : activeChat?.name || ''}</div>
-              {contactProfile?.bio && <div className="mobile-profile-bio">{contactProfile.bio}</div>}
+              <div className="mobile-profile-name">{(viewedUser || contactProfile) ? `${(viewedUser || contactProfile)!.name} ${(viewedUser || contactProfile)!.surname}` : activeChat?.name || ''}</div>
+              {(viewedUser || contactProfile)?.bio && <div className="mobile-profile-bio">{(viewedUser || contactProfile)?.bio}</div>}
             </div>
-            {contactProfile && (
+            {(viewedUser || contactProfile) && (
               <div className="mobile-profile-section" style={{ paddingTop: 8 }}>
                 <div className="mobile-profile-card">
-                  <div className="mobile-profile-row"><span className="mobile-profile-label">{t('email', settings.language)}</span><span className="mobile-profile-value">{contactProfile.email || '—'}</span></div>
-                  {contactProfile.phone && <div className="mobile-profile-row"><span className="mobile-profile-label">{t('phone', settings.language)}</span><span className="mobile-profile-value">{contactProfile.phone}</span></div>}
-                  {contactProfile.username && <div className="mobile-profile-row"><span className="mobile-profile-label">{t('username', settings.language)}</span><span className="mobile-profile-value">@{contactProfile.username}</span></div>}
+                  <div className="mobile-profile-row"><span className="mobile-profile-label">{t('email', settings.language)}</span><span className="mobile-profile-value click-to-copy" onClick={() => (viewedUser || contactProfile)?.email && copyField(t('email', settings.language), (viewedUser || contactProfile)!.email!)}>{(viewedUser || contactProfile)?.email || '—'}</span></div>
+                  {(viewedUser || contactProfile)?.phone && <div className="mobile-profile-row"><span className="mobile-profile-label">{t('phone', settings.language)}</span><span className="mobile-profile-value click-to-copy" onClick={() => copyField(t('phone', settings.language), (viewedUser || contactProfile)!.phone!)}>{(viewedUser || contactProfile)?.phone}</span></div>}
+                  {(viewedUser || contactProfile)?.username && <div className="mobile-profile-row"><span className="mobile-profile-label">{t('username', settings.language)}</span><span className="mobile-profile-value click-to-copy" onClick={() => copyField(t('username', settings.language), (viewedUser || contactProfile)!.username!)}>@{(viewedUser || contactProfile)?.username}</span></div>}
                 </div>
               </div>
             )}
@@ -864,9 +1580,41 @@ function MobileApp() {
         {/* ===== OPUS TAB ===== */}
         {tab === 'opus' && (
           <div className={`mobile-opus${aiConversation.length > 0 ? ' has-messages' : ''}${firstOpusEntry && aiConversation.length === 0 ? ' mobile-opus-entry' : ''}`}>
-            {aiConversation.length === 0 ? (
-              <div className="mobile-opus-welcome">
-                <h1 className="mobile-opus-header">{t('letsTextSomeone', settings.language)}</h1>
+            <div className="mobile-opus-welcome" style={{ opacity: aiConversation.length > 0 ? 0 : 1, pointerEvents: aiConversation.length > 0 ? 'none' : 'auto' }}>
+              <h1 className="mobile-opus-header">{t('letsTextSomeone', settings.language)}</h1>
+              <div className="mobile-opus-input-wrapper">
+                <input
+                  type="text"
+                  className="mobile-opus-input"
+                  placeholder={t('askOpus', settings.language)}
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAiSend() }}
+                />
+                <button className={`mobile-send-btn${inputText.trim() ? ' active' : ''}`} onClick={handleAiSend}>
+                  <ArrowUp size={20} />
+                </button>
+              </div>
+            </div>
+            <div className="mobile-thread-messages" ref={aiMessagesRef} style={{ opacity: aiConversation.length > 0 ? 1 : 0, pointerEvents: aiConversation.length > 0 ? 'auto' : 'none' }}>
+              {aiConversation.map((msg, i) => (
+                <div key={i} className={`mobile-msg-row ${msg.role === 'user' ? 'sender-me' : 'sender-them'}`}>
+                  <div className="mobile-msg-bubble">
+                    <div className="mobile-msg-text">{renderMessageText(msg.text)}</div>
+                    {msg.time && <div className="mobile-msg-time">{msg.time}</div>}
+                  </div>
+                </div>
+              ))}
+              {aiLoading && (
+                <div className="mobile-msg-row sender-them">
+                  <div className="mobile-msg-bubble mobile-ai-typing">
+                    <span className="ai-thinking">thinking...</span>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="mobile-opus-bottom-input" style={{ opacity: aiConversation.length > 0 ? 1 : 0, pointerEvents: aiConversation.length > 0 ? 'auto' : 'none' }}>
+              <div className="mobile-thread-input">
                 <div className="mobile-opus-input-wrapper">
                   <input
                     type="text"
@@ -881,41 +1629,7 @@ function MobileApp() {
                   </button>
                 </div>
               </div>
-            ) : (
-              <>
-                <div className="mobile-thread-messages" ref={aiMessagesRef}>
-                  {aiConversation.map((msg, i) => (
-                    <div key={i} className={`mobile-msg-row ${msg.role === 'user' ? 'sender-me' : 'sender-them'}`}>
-                      <div className="mobile-msg-bubble">
-                        <div className="mobile-msg-text">{msg.text}</div>
-                      </div>
-                    </div>
-                  ))}
-                  {aiLoading && (
-                    <div className="mobile-msg-row sender-them">
-                      <div className="mobile-msg-bubble mobile-ai-typing">
-                        <span className="ai-typing">...</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <div className="mobile-thread-input">
-                  <div className="mobile-opus-input-wrapper">
-                    <input
-                      type="text"
-                      className="mobile-opus-input"
-                      placeholder={t('askOpus', settings.language)}
-                      value={inputText}
-                      onChange={(e) => setInputText(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') handleAiSend() }}
-                    />
-                    <button className={`mobile-send-btn${inputText.trim() ? ' active' : ''}`} onClick={handleAiSend}>
-                      <ArrowUp size={20} />
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
+            </div>
           </div>
         )}
 
@@ -924,12 +1638,12 @@ function MobileApp() {
           <div className="mobile-profile">
             <div className="mobile-profile-header-bg" />
             <div className="mobile-profile-hero">
-              <div className="mobile-profile-avatar-wrap">
+              <div className="mobile-profile-avatar-wrap" ref={profileAvatarRef}>
                 <div className="mobile-profile-avatar-ring">
                   <div
                     className="mobile-profile-avatar-inner"
                     style={user?.avatar ? { backgroundImage: `url(${user.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', cursor: 'pointer' } : {}}
-                    onClick={() => user?.avatar && setFullscreenImage(user.avatar)}
+                    onClick={openAvatarAnim}
                   >
                     {!user?.avatar && <User size={44} strokeWidth={1.5} />}
                   </div>
@@ -950,7 +1664,6 @@ function MobileApp() {
               </button>
             </div>
 
-
           </div>
         )}
 
@@ -962,7 +1675,7 @@ function MobileApp() {
                 <ChevronLeft size={24} />
               </button>
               <div className="mobile-edit-title">{t('editProfile', settings.language)}</div>
-              <button className="mobile-edit-save" onClick={() => {
+              <button className={`mobile-edit-save${!hasEditChanges ? ' disabled' : ''}`} disabled={!hasEditChanges} onClick={() => {
                 api('/users/me', { method: 'PUT', body: JSON.stringify(editProfile) }).then(() => {
                   setUser(prev => prev ? { ...prev, ...editProfile } : prev)
                   setProfileView('profile')
@@ -1121,26 +1834,13 @@ function MobileApp() {
                 </div>
               </div>
 
-              <div className="mobile-settings-group">
-                <h3 className="mobile-settings-group-title">{t('data', settings.language)}</h3>
-                <div className="mobile-settings-card">
-                  <div className="mobile-settings-row">
-                    <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#3287FE' }}>
-                      <HardDrive size={18} />
-                    </div>
-                    <span className="mobile-settings-label">{t('storage', settings.language)}</span>
-                    <span className="mobile-settings-value">12.4 MB</span>
-                  </div>
-                  <div className="mobile-settings-row clickable" onClick={() => cycleSetting('autoDownload', ['Wi-Fi only', 'Always', 'Never'])}>
-                    <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#13B962' }}>
-                      <Download size={18} />
-                    </div>
-                    <span className="mobile-settings-label">{t('autoDownload', settings.language)}</span>
-                    <span className="mobile-settings-value">{settings.autoDownload}</span>
-                    <ChevronRight size={16} className="mobile-settings-chevron" />
-                  </div>
-                </div>
+              <div className="mobile-settings-logout-wrap">
+                <button className="mobile-settings-logout" onClick={handleLogout}>
+                  <LogOut size={18} />
+                  <span>{t('logOut', settings.language)}</span>
+                </button>
               </div>
+
             </div>
           </div>
         )}
@@ -1169,7 +1869,7 @@ function MobileApp() {
           onTouchStart={() => {
             tabLongPressTimer.current = setTimeout(() => {
               tabLongPressTimer.current = null
-              handleTabLongPress()
+              handleTabLongPress('chats')
             }, 500)
           }}
           onTouchEnd={() => {
@@ -1184,14 +1884,39 @@ function MobileApp() {
               tabLongPressTimer.current = null
             }
           }}
-          onContextMenu={(e) => { e.preventDefault(); handleTabLongPress() }}
+          onContextMenu={(e) => { e.preventDefault(); handleTabLongPress('chats') }}
         >
           <span className="mobile-tab-icon"><MessageSquare size={20} /></span>
         </button>
         <button
           ref={el => void (tabRefs.current['opus'] = el)}
           className={`mobile-tab ${tab === 'opus' ? 'active' : ''}`}
-          onClick={() => setTab('opus')}
+          onClick={() => {
+            if (tabLongPressed.current) {
+              tabLongPressed.current = false
+              return
+            }
+            setTab('opus')
+          }}
+          onTouchStart={() => {
+            tabLongPressTimer.current = setTimeout(() => {
+              tabLongPressTimer.current = null
+              handleTabLongPress('opus')
+            }, 500)
+          }}
+          onTouchEnd={() => {
+            if (tabLongPressTimer.current) {
+              clearTimeout(tabLongPressTimer.current)
+              tabLongPressTimer.current = null
+            }
+          }}
+          onTouchMove={() => {
+            if (tabLongPressTimer.current) {
+              clearTimeout(tabLongPressTimer.current)
+              tabLongPressTimer.current = null
+            }
+          }}
+          onContextMenu={(e) => { e.preventDefault(); handleTabLongPress('opus') }}
         >
           <span className="mobile-tab-icon">
             <svg width="20" height="18" viewBox="0 0 112 96" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1202,24 +1927,65 @@ function MobileApp() {
         <button
           ref={el => void (tabRefs.current['profile'] = el)}
           className={`mobile-tab ${tab === 'profile' ? 'active' : ''}`}
-          onClick={() => { setTab('profile'); setProfileView('profile') }}
+          onClick={() => {
+            if (tabLongPressed.current) {
+              tabLongPressed.current = false
+              return
+            }
+            setTab('profile')
+            setProfileView('profile')
+          }}
+          onTouchStart={() => {
+            tabLongPressTimer.current = setTimeout(() => {
+              tabLongPressTimer.current = null
+              handleTabLongPress('profile')
+            }, 500)
+          }}
+          onTouchEnd={() => {
+            if (tabLongPressTimer.current) {
+              clearTimeout(tabLongPressTimer.current)
+              tabLongPressTimer.current = null
+            }
+          }}
+          onTouchMove={() => {
+            if (tabLongPressTimer.current) {
+              clearTimeout(tabLongPressTimer.current)
+              tabLongPressTimer.current = null
+            }
+          }}
+          onContextMenu={(e) => { e.preventDefault(); handleTabLongPress('profile') }}
         >
           <span className="mobile-tab-icon"><User size={20} /></span>
         </button>
       </div>
 
-      <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) alert(`Selected: ${f.name}`); e.target.value = '' }} />
+      <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={(e) => {
+        closeSheetImmediate()
+        const files = Array.from(e.target.files || [])
+        if (!files.length) return
+        files.forEach(f => {
+          const formData = new FormData()
+          formData.append('file', f)
+          api('/upload/file', { method: 'POST', body: formData }).then((res: any) => {
+            setPendingAttachments(prev => [...prev, { url: res.url, type: res.type, name: f.name }])
+          }).catch(() => {})
+        })
+        e.target.value = ''
+      }} />
 
       {/* ===== BOTTOM SHEET: Attach Menu ===== */}
       {(attachMenu || closingSheet === 'attach') && (
         <div className={`mobile-sheet-overlay${closingSheet === 'attach' ? ' closing' : ''}`} onClick={() => closeSheet('attach')}>
           <div className={`mobile-sheet${closingSheet === 'attach' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
             <div className="mobile-sheet-handle" />
-            <button className="mobile-sheet-item" onClick={() => { fileInputRef.current?.click(); closeSheetImmediate() }}>
+            <button className="mobile-sheet-item" onClick={() => { fileInputRef.current?.click(); }}>
               <Image size={18} /><span>{t('photoOrVideo', settings.language)}</span>
             </button>
-            <button className="mobile-sheet-item" onClick={() => { fileInputRef.current?.click(); closeSheetImmediate() }}>
+            <button className="mobile-sheet-item" onClick={() => { fileInputRef.current?.click(); }}>
               <File size={18} /><span>{t('document', settings.language)}</span>
+            </button>
+            <button className="mobile-sheet-item" onClick={() => { closeSheetImmediate(); setPollModalOpen(true) }}>
+              <BarChart3 size={18} /><span>Poll</span>
             </button>
           </div>
         </div>
@@ -1230,6 +1996,15 @@ function MobileApp() {
         <div className={`mobile-sheet-overlay${closingSheet === 'context' ? ' closing' : ''}`} onClick={() => closeSheet('context')}>
           <div className={`mobile-sheet${closingSheet === 'context' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
             <div className="mobile-sheet-handle" />
+            <button className="mobile-sheet-item" onClick={() => {
+              if (contextMenu) {
+                const msg = messages.find(m => m.id === contextMenu.messageId)
+                if (msg) setReplyTo({ messageId: msg.id, text: msg.text, attachmentUrl: msg.attachmentUrl, attachmentType: msg.attachmentType })
+              }
+              closeSheetImmediate()
+            }}>
+              <Reply size={18} /><span>{t('reply', settings.language)}</span>
+            </button>
             <button className="mobile-sheet-item" onClick={() => { copyMessage(); closeSheetImmediate() }}>
               <Copy size={18} /><span>{t('copy', settings.language)}</span>
             </button>
@@ -1342,6 +2117,18 @@ function MobileApp() {
         </div>
       )}
 
+      {/* ===== BOTTOM SHEET: Opus Menu (from tab bar) ===== */}
+      {(opusMenuSheet || closingSheet === 'opusMenu') && (
+        <div className={`mobile-sheet-overlay${closingSheet === 'opusMenu' ? ' closing' : ''}`} onClick={() => closeSheet('opusMenu')}>
+          <div className={`mobile-sheet${closingSheet === 'opusMenu' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => handleClearOpusChat()}>
+              <Trash2 size={18} /><span>{t('clearChat', settings.language)}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ===== FULLSCREEN: Folder Edit ===== */}
       {folderEditOpen && (
         <div className="mobile-folder-edit">
@@ -1422,7 +2209,7 @@ function MobileApp() {
                 <h3 className="mobile-settings-group-title">{t('chats', settings.language)}</h3>
                 {folder.chats.length > 0 && (
                   <div className="mobile-settings-card">
-                    {chats.filter(c => folder.chats.includes(c.id)).map((chat) => (
+                    {chats.filter(c => folder.chats.includes(c.id) && c.name !== 'Opus').map((chat) => (
                       <div key={chat.id} className="mobile-settings-row">
                         <span className="mobile-settings-label">{chat.name}</span>
                         <button
@@ -1480,7 +2267,7 @@ function MobileApp() {
             {(() => {
               const folder = folders.find(f => f.id === addChatsSheet?.folderId)
               if (!folder) return null
-              const availableChats = chats.filter(c => !folder.chats.includes(c.id))
+              const availableChats = chats.filter(c => !folder.chats.includes(c.id) && c.name !== 'Opus')
               if (availableChats.length === 0) return <div className="mobile-sheet-item" style={{ color: '#8c8c88' }}>{t('noChats', settings.language)}</div>
               return availableChats.map(chat => {
                 const isSelected = addChatsSheet?.selected.has(chat.id)
@@ -1575,6 +2362,71 @@ function MobileApp() {
           </div>
         </div>
       )}
+
+      {pollModalOpen && (
+        <div className="poll-modal-overlay" onClick={() => setPollModalOpen(false)}>
+          <div className="poll-modal" onClick={e => e.stopPropagation()}>
+            <div className="poll-modal-header">
+              <h2 className="poll-modal-title">New Poll</h2>
+              <button className="poll-modal-close" onClick={() => setPollModalOpen(false)}><X size={18} /></button>
+            </div>
+            <div className="poll-modal-body">
+              <div className="poll-question-wrap">
+                <label className="poll-label">Question</label>
+                <input
+                  className="poll-question-input"
+                  placeholder="Ask something..."
+                  value={pollQuestion}
+                  onChange={e => setPollQuestion(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="poll-options-wrap">
+                <label className="poll-label">Options</label>
+                <div className="poll-options-list">
+                  {pollOptions.map((opt, idx) => (
+                    <div key={idx} className="poll-option-row">
+                      <span className="poll-option-badge">{String.fromCharCode(65 + idx)}</span>
+                      <input
+                        className="poll-option-input"
+                        placeholder={`Option ${idx + 1}`}
+                        value={opt}
+                        onChange={e => {
+                          const next = [...pollOptions]
+                          next[idx] = e.target.value
+                          setPollOptions(next)
+                        }}
+                      />
+                      {pollOptions.length > 2 && (
+                        <button className="poll-option-remove" onClick={() => setPollOptions(prev => prev.filter((_, i) => i !== idx))}>
+                          <X size={14} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {pollOptions.length < 10 && (
+                  <button className="poll-add-option" onClick={() => setPollOptions(prev => [...prev, ''])}>
+                    <Plus size={16} /><span>Add option</span>
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="poll-modal-footer">
+              <button className="poll-btn poll-btn-secondary" onClick={() => setPollModalOpen(false)}>Cancel</button>
+              <button
+                className="poll-btn poll-btn-primary"
+                disabled={!pollQuestion.trim() || pollOptions.filter(o => o.trim()).length < 2}
+                onClick={handleCreatePoll}
+              >
+                Create Poll
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && <div className={`toast${toastClosing ? ' closing' : ''}`}>{toast}</div>}
     </div>
   )
 }

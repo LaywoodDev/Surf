@@ -5,6 +5,18 @@ import { authMiddleware, AuthRequest } from '../middleware/auth'
 const router = Router()
 router.use(authMiddleware)
 
+router.get('/contacts', (req: AuthRequest, res: Response) => {
+  const contacts = db.prepare(`
+    SELECT DISTINCT u.id, u.name, u.surname, u.username, u.avatar
+    FROM users u
+    JOIN chat_participants cp ON cp.user_id = u.id
+    JOIN chat_participants cp2 ON cp2.chat_id = cp.chat_id
+    WHERE cp2.user_id = ? AND u.id != ?
+  `).all(req.userId, req.userId)
+
+  res.json(contacts)
+})
+
 router.get('/search', (req: AuthRequest, res: Response) => {
   const q = (req.query.q as string || '').trim()
   if (!q) {
@@ -37,6 +49,16 @@ router.put('/me', (req: AuthRequest, res: Response) => {
   db.prepare('UPDATE users SET username = ?, phone = ?, bio = ? WHERE id = ?')
     .run(username || '', phone || '', bio || '', req.userId)
   res.json({ success: true })
+})
+
+router.get('/by-username/:username', (req: AuthRequest, res: Response) => {
+  const username = req.params.username
+  const user = db.prepare('SELECT id, name, surname, email, username, phone, bio, avatar FROM users WHERE username = ?').get(username) as any
+  if (!user) {
+    res.status(404).json({ error: 'User not found' })
+    return
+  }
+  res.json(user)
 })
 
 router.put('/me/privacy', (req: AuthRequest, res: Response) => {
