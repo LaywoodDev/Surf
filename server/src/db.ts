@@ -55,6 +55,7 @@ try { db.exec(`ALTER TABLE chat_participants ADD COLUMN pinned INTEGER DEFAULT 0
 try { db.exec(`ALTER TABLE messages ADD COLUMN reply_to_id INTEGER`) } catch {};
 try { db.exec(`ALTER TABLE messages ADD COLUMN attachment_url TEXT`) } catch {};
 try { db.exec(`ALTER TABLE messages ADD COLUMN attachment_type TEXT`) } catch {};
+try { db.exec(`ALTER TABLE messages ADD COLUMN status TEXT DEFAULT 'sent'`) } catch {};
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS folders (
@@ -115,5 +116,45 @@ db.exec(`
 `)
 
 try { db.exec(`ALTER TABLE messages ADD COLUMN poll_id INTEGER`) } catch {};
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS public_keys (
+    user_id INTEGER PRIMARY KEY,
+    public_key TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS subscription_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    price_rub INTEGER NOT NULL,
+    duration_days INTEGER NOT NULL,
+    description TEXT NOT NULL DEFAULT ''
+  );
+
+  CREATE TABLE IF NOT EXISTS user_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    plan_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    yookassa_payment_id TEXT,
+    start_date TEXT NOT NULL DEFAULT (datetime('now')),
+    end_date TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (plan_id) REFERENCES subscription_plans(id)
+  );
+`);
+
+const planCount = db.prepare('SELECT COUNT(*) as count FROM subscription_plans').get() as any
+if (planCount.count === 0) {
+  db.exec(`
+    INSERT INTO subscription_plans (name, price_rub, duration_days, description) VALUES
+      ('monthly', 150, 30, 'Pro на месяц'),
+      ('annual', 1299, 365, 'Pro на год');
+  `)
+}
 
 export default db

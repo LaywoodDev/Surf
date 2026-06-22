@@ -38,6 +38,23 @@ router.post('/process', async (req: AuthRequest, res: Response) => {
     return
   }
 
+  const opusUserId = (db.prepare('SELECT id FROM users WHERE email = ?').get('opus@ai.local') as any)?.id
+
+  if (chatId && opusUserId) {
+    const isOpusChat = db.prepare(
+      'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
+    ).get(chatId, opusUserId)
+    if (!isOpusChat) {
+      const sub = db.prepare(
+        "SELECT id FROM user_subscriptions WHERE user_id = ? AND status = 'active' AND end_date > datetime('now')"
+      ).get(req.userId) as any
+      if (!sub) {
+        res.status(403).json({ error: 'Pro subscription required for Opus in chats' })
+        return
+      }
+    }
+  }
+
   if (!PROXYAPI_KEY) {
     res.status(500).json({ error: 'PROXYAPI_KEY not configured on server' })
     return
@@ -54,7 +71,6 @@ router.post('/process', async (req: AuthRequest, res: Response) => {
     ORDER BY c.name ASC
   `).all(req.userId) as { id: number; name: string }[]
 
-  let opusUserId: number | undefined
   if (chatId) {
     const participant = db.prepare(
       'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
@@ -65,8 +81,6 @@ router.post('/process', async (req: AuthRequest, res: Response) => {
     }
     db.prepare('INSERT INTO messages (chat_id, sender_id, text) VALUES (?, ?, ?)')
       .run(chatId, req.userId, text.trim())
-    const opus = db.prepare('SELECT id FROM users WHERE email = ?').get('opus@ai.local') as { id: number } | undefined
-    opusUserId = opus?.id
   }
 
   const chatDetails = chats.map(c => {

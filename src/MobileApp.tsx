@@ -5,9 +5,13 @@ import {
   ChevronLeft, MoreVertical, Camera, Image, File, X,
   ChevronRight, Mail, AtSign,
   Globe, Eye, Volume2, AlignLeft, Clock,
-  Pin, Folder, Check, LogOut, BarChart3
+  Pin, Folder, Check, LogOut, BarChart3, CheckCircle,
+  Cloud, BadgeCheck
 } from 'lucide-react'
 import { t, langName, p } from './i18n'
+import Offer from './pages/Offer'
+import Contacts from './pages/Contacts'
+import ProSuccess from './pages/ProSuccess'
 import './MobileApp.css'
 
 interface Chat {
@@ -16,6 +20,7 @@ interface Chat {
   lastMessage: string
   time: string
   pinned?: boolean
+  participantId?: number
 }
 
 interface Folder {
@@ -24,6 +29,19 @@ interface Folder {
   icon: string
   sortOrder: number
   chats: number[]
+}
+
+interface Plan {
+  id: number
+  name: string
+  price_rub: number
+  duration_days: number
+  description: string
+}
+
+interface ProStatus {
+  active: boolean
+  end_date?: string
 }
 
 interface PollOption {
@@ -46,6 +64,8 @@ interface Message {
   sender: 'me' | 'them'
   text: string
   time: string
+  createdAt?: string
+  status?: 'sent' | 'delivered' | 'read'
   senderName?: string
   replyToId?: number
   replyText?: string
@@ -69,6 +89,77 @@ interface UserData {
 }
 
 const API = '/api'
+const CHAT_DRAFTS_STORAGE_KEY = 'surf_chat_drafts'
+const SETTINGS_STORAGE_KEY = 'surf_settings'
+const defaultSettings = {
+  language: 'English',
+  theme: 'Dark',
+  previews: 'On',
+  sounds: 'On',
+  lastSeen: 'Everyone',
+  profilePhoto: 'Everyone',
+  autoDownload: 'Wi-Fi only',
+  phonePrivacy: 'Everyone',
+  emailPrivacy: 'Everyone',
+  bioPrivacy: 'Everyone',
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
+    if (!raw) return defaultSettings
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? { ...defaultSettings, ...parsed } : defaultSettings
+  } catch {
+    return defaultSettings
+  }
+}
+
+function loadChatDrafts() {
+  try {
+    const raw = localStorage.getItem(CHAT_DRAFTS_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed as Record<number, string> : {}
+  } catch {
+    return {}
+  }
+}
+
+function getChatDraftPreview(text?: string) {
+  const draft = text?.trim()
+  return draft ? `Draft: ${draft}` : null
+}
+
+function getMessageDayKey(createdAt?: string) {
+  if (!createdAt) return null
+  const date = new Date(createdAt)
+  if (Number.isNaN(date.getTime())) return null
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+}
+
+function formatMessageDay(createdAt?: string) {
+  if (!createdAt) return ''
+  const date = new Date(createdAt)
+  if (Number.isNaN(date.getTime())) return ''
+  const today = new Date()
+  const yesterday = new Date()
+  yesterday.setDate(today.getDate() - 1)
+
+  const isSameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+
+  if (isSameDay(date, today)) return 'Today'
+  if (isSameDay(date, yesterday)) return 'Yesterday'
+
+  return date.toLocaleDateString([], { day: 'numeric', month: 'long' })
+}
+
+async function uploadPendingFile(file: File) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return api('/upload/file', { method: 'POST', body: formData })
+}
 
 function api(path: string, options?: RequestInit) {
   const token = localStorage.getItem('token')
@@ -84,6 +175,21 @@ function api(path: string, options?: RequestInit) {
     if (!r.ok) throw new Error(d.error || 'Request failed')
     return d
   }))
+}
+
+function MessageStatusIcon({ status }: { status?: 'sent' | 'delivered' | 'read' }) {
+  if (!status) return null
+
+  if (status === 'sent') {
+    return <Check size={13} strokeWidth={2.2} className="mobile-msg-status-icon" />
+  }
+
+  return (
+    <span className={`mobile-msg-status-double${status === 'read' ? ' is-read' : ''}`}>
+      <Check size={13} strokeWidth={2.2} className="mobile-msg-status-icon overlap" />
+      <Check size={13} strokeWidth={2.2} className="mobile-msg-status-icon" />
+    </span>
+  )
 }
 
 function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () => void }) {
@@ -160,13 +266,14 @@ function MobileApp() {
   const [chats, setChats] = useState<Chat[]>([])
   const [activeChatId, setActiveChatId] = useState<number | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
-  const [chatInputTexts, setChatInputTexts] = useState<Record<number, string>>({})
+  const [chatInputTexts, setChatInputTexts] = useState<Record<number, string>>(loadChatDrafts)
   const [contactProfile, setContactProfile] = useState<UserData | null>(null)
   const [viewedUser, setViewedUser] = useState<UserData | null>(null)
   const [contacts, setContacts] = useState<UserData[]>([])
   const [mentionMenu, setMentionMenu] = useState<{ chatId: number; query: string } | null>(null)
   const [replyTo, setReplyTo] = useState<{ messageId: number; text: string; attachmentUrl?: string; attachmentType?: string } | null>(null)
   const [pendingAttachments, setPendingAttachments] = useState<{ url: string; type: string; name: string }[]>([])
+  const [isPeerTyping, setIsPeerTyping] = useState(false)
   const [folders, setFolders] = useState<Folder[]>([])
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null)
   const [folderSheet, setFolderSheet] = useState<{ chatId: number } | null>(null)
@@ -318,6 +425,7 @@ function MobileApp() {
   const [closingSheet, setClosingSheet] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [toastClosing, setToastClosing] = useState(false)
+  const typingHeartbeatRef = useRef<Record<number, number>>({})
 
   const closeSheet = (type: string) => {
     if (closingSheet) return
@@ -352,6 +460,9 @@ function MobileApp() {
     setAddChatsSheet(null)
     setClosingSheet(null)
   }
+
+  const handleOpenPro = () => setProOpen(true)
+  const handleClosePro = () => setProOpen(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const chatInputRefs = useRef<Record<number, HTMLInputElement | null>>({})
@@ -448,24 +559,29 @@ function MobileApp() {
 
   const [editProfile, setEditProfile] = useState({ username: '', phone: '', bio: '' })
   const [profileView, setProfileView] = useState<'profile' | 'edit' | 'settings'>('profile')
-  const [optionPicker, setOptionPicker] = useState<string | null>(null)
-  const [settings, setSettings] = useState({
-    language: 'English',
-    theme: 'Dark',
-    previews: 'On',
-    sounds: 'On',
-    lastSeen: 'Everyone',
-    profilePhoto: 'Everyone',
-    autoDownload: 'Wi-Fi only',
-    phonePrivacy: 'Everyone',
-    emailPrivacy: 'Everyone',
-    bioPrivacy: 'Everyone',
+  const [proOpen, setProOpen] = useState(false)
+  const [proPlan, setProPlan] = useState<'monthly' | 'annual'>('annual')
+  const [proPlans, setProPlans] = useState<Plan[]>([])
+  const [proStatus, setProStatus] = useState<ProStatus | null>(null)
+  const [upgradeLoading, setUpgradeLoading] = useState(false)
+  const [pageStack, setPageStack] = useState<string[]>(() => {
+    const p = window.location.pathname
+    if (p === '/offer') return ['offer']
+    if (p === '/contacts') return ['contacts']
+    return []
   })
+  const [showProSuccess, setShowProSuccess] = useState(window.location.pathname === '/pro/success')
+  const [optionPicker, setOptionPicker] = useState<string | null>(null)
+  const [settings, setSettings] = useState(loadSettings)
 
   const [pollModalOpen, setPollModalOpen] = useState(false)
   const [pollQuestion, setPollQuestion] = useState('')
   const [pollOptions, setPollOptions] = useState<string[]>(['', ''])
   const [pollsCache, setPollsCache] = useState<Record<number, Poll>>({})
+
+  useEffect(() => {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  }, [settings])
 
   useEffect(() => {
     if (token) {
@@ -493,12 +609,49 @@ function MobileApp() {
       api('/chats').then(setChats)
       api('/folders').then(setFolders)
       api('/users/contacts').then(setContacts)
+      api('/subscription/status').then(setProStatus).catch(() => {})
     }
   }, [isLoggedIn])
 
   useEffect(() => {
+    if (proOpen) {
+      api('/subscription/plans').then(data => setProPlans(data.plans || [])).catch(() => {})
+    }
+  }, [proOpen])
+
+  useEffect(() => {
+    localStorage.setItem(CHAT_DRAFTS_STORAGE_KEY, JSON.stringify(chatInputTexts))
+  }, [chatInputTexts])
+
+  useEffect(() => {
+    const currentChat = chats.find(c => c.id === activeChatId)
+    if (!activeChatId || !currentChat?.participantId || currentChat.name === 'Opus') {
+      setIsPeerTyping(false)
+      return
+    }
+
+    const pollTyping = () => {
+      api(`/chats/${activeChatId}/typing`).then((res: { typing: boolean }) => {
+        setIsPeerTyping(!!res.typing)
+      }).catch(() => setIsPeerTyping(false))
+    }
+
+    pollTyping()
+    const interval = window.setInterval(pollTyping, 1800)
+    return () => window.clearInterval(interval)
+  }, [activeChatId, chats])
+
+  useEffect(() => {
     if (activeChatId) {
-      api(`/chats/${activeChatId}/messages`).then(setMessages)
+      api(`/chats/${activeChatId}/messages`).then((msgs: Message[]) => {
+        setMessages(msgs)
+        const chat = chats.find(c => c.id === activeChatId)
+        if (chat?.name !== 'Opus') {
+          api(`/chats/${activeChatId}/read`, { method: 'POST' }).then(() => {
+            setMessages(prev => prev.map(m => m.sender === 'them' ? { ...m, status: 'read' } : m))
+          }).catch(() => {})
+        }
+      })
       api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
       api(`/polls/chat/${activeChatId}`).then((polls: Poll[]) => {
         const cacheUpdate: Record<number, Poll> = {}
@@ -508,7 +661,7 @@ function MobileApp() {
     }
     setMentionMenu(null)
     setViewedUser(null)
-  }, [activeChatId])
+  }, [activeChatId, chats])
 
   const opusLoadedRef = useRef(false)
   useEffect(() => {
@@ -608,6 +761,10 @@ function MobileApp() {
     if (closingThread) return
     setClosingThread(true)
     setMentionMenu(null)
+    if (activeChatId) {
+      delete typingHeartbeatRef.current[activeChatId]
+      api(`/chats/${activeChatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: false }) }).catch(() => {})
+    }
     setTimeout(() => {
       setChatView('list')
       setActiveChatId(null)
@@ -624,6 +781,11 @@ function MobileApp() {
       setClosingContact(false)
       setViewedUser(null)
     }, 280)
+  }
+
+  const playSentMessageSound = () => {
+    if (settings.sounds !== 'On') return
+    new Audio(`${import.meta.env.BASE_URL}sentmessage_1.mp3`).play().catch(() => {})
   }
 
   const handleSendMessage = (chatId: number) => {
@@ -644,6 +806,7 @@ function MobileApp() {
       } else {
         setMessages(prev => [...prev, msg])
       }
+      playSentMessageSound()
       setChatInputTexts(prev => ({ ...prev, [chatId]: '' }))
       setReplyTo(null)
       setPendingAttachments([])
@@ -725,6 +888,19 @@ function MobileApp() {
 
   const handleChatInputChange = (chatId: number, value: string) => {
     setChatInputTexts(prev => ({ ...prev, [chatId]: value }))
+    const chat = chats.find(c => c.id === chatId)
+    if (chat?.participantId && chat.name !== 'Opus') {
+      const now = Date.now()
+      const hasText = value.trim().length > 0
+      if (hasText && (!typingHeartbeatRef.current[chatId] || now - typingHeartbeatRef.current[chatId] > 2000)) {
+        typingHeartbeatRef.current[chatId] = now
+        api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: true }) }).catch(() => {})
+      }
+      if (!hasText) {
+        delete typingHeartbeatRef.current[chatId]
+        api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: false }) }).catch(() => {})
+      }
+    }
     const input = chatInputRefs.current[chatId]
     if (!input) return
     const cursorPos = input.selectionStart || 0
@@ -740,6 +916,23 @@ function MobileApp() {
       return
     }
     setMentionMenu({ chatId, query: afterAt.toLowerCase() })
+  }
+
+  const handleChatPaste = async (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const items = Array.from(e.clipboardData.items || [])
+    const imageItem = items.find(item => item.type.startsWith('image/'))
+    if (!imageItem) return
+
+    const file = imageItem.getAsFile()
+    if (!file) return
+
+    e.preventDefault()
+    try {
+      const res = await uploadPendingFile(file)
+      setPendingAttachments(prev => [...prev, { url: res.url, type: res.type, name: file.name || 'clipboard-image.png' }])
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Failed to paste image')
+    }
   }
 
   const insertMention = (chatId: number, username: string) => {
@@ -832,6 +1025,7 @@ function MobileApp() {
 
   const clearChat = (chatId: number, forBoth: boolean) => {
     api(`/chats/${chatId}/messages`, { method: 'DELETE', body: JSON.stringify({ forBoth }) }).then(() => {
+      setChatInputTexts(prev => ({ ...prev, [chatId]: '' }))
       if (activeChatId === chatId) {
         setMessages([])
         setChats(prev => prev.map(c => c.id === chatId ? { ...c, lastMessage: '', time: '' } : c))
@@ -852,6 +1046,11 @@ function MobileApp() {
     if (!chatContextMenu) return
     api(`/chats/${chatContextMenu.chatId}`, { method: 'DELETE' }).then(() => {
       setChats(prev => prev.filter(c => c.id !== chatContextMenu.chatId))
+      setChatInputTexts(prev => {
+        const next = { ...prev }
+        delete next[chatContextMenu.chatId]
+        return next
+      })
       setChatContextMenu(null)
     }).catch(err => alert(err.message))
   }
@@ -1039,7 +1238,7 @@ function MobileApp() {
     }
 
     if (authMode === 'register-info') {
-      return (
+      return (<>
         <div className="mobile-auth-page mobile-auth-info-page">
           <button
             className="mobile-auth-back"
@@ -1122,14 +1321,20 @@ function MobileApp() {
             </form>
           </div>
         </div>
-      )
+        {pageStack.includes('offer') && (
+          <Offer language={settings.language} onClose={() => { setPageStack(prev => prev.filter(p => p !== 'offer')); window.history.replaceState(null, '', window.location.origin) }} />
+        )}
+        {pageStack.includes('contacts') && (
+          <Contacts language={settings.language} onClose={() => { setPageStack(prev => prev.filter(p => p !== 'contacts')); window.history.replaceState(null, '', window.location.origin) }} />
+        )}
+      </>)
     }
 
     const isLogin = authMode === 'login'
     const agreeText = t('byTappingAgree', settings.language).replace('{action}', isLogin ? t('continue', settings.language) : t('signUp', settings.language))
 
     if (authMode === 'welcome' && !authSheetClosing) {
-      return (
+      return (<>
         <div className="mobile-auth-page">
           <div className="mobile-auth-welcome">
             <div className="mobile-auth-welcome-logo">
@@ -1151,10 +1356,16 @@ function MobileApp() {
             </button>
           </div>
         </div>
-      )
+        {pageStack.includes('offer') && (
+          <Offer language={settings.language} onClose={() => { setPageStack(prev => prev.filter(p => p !== 'offer')); window.history.replaceState(null, '', window.location.origin) }} />
+        )}
+        {pageStack.includes('contacts') && (
+          <Contacts language={settings.language} onClose={() => { setPageStack(prev => prev.filter(p => p !== 'contacts')); window.history.replaceState(null, '', window.location.origin) }} />
+        )}
+      </>)
     }
 
-    return (
+    return (<>
       <div className="mobile-auth-page mobile-auth-sheet-page">
         <div className="mobile-auth-sheet-header">
           <AuthLogo size={48} />
@@ -1223,9 +1434,9 @@ function MobileApp() {
             </div>
             <p className="mobile-auth-terms">
               {agreeText}{' '}
-              <span className="mobile-auth-terms-link">{t('terms', settings.language)}</span>{' '}
+              <button type="button" className="mobile-auth-terms-link" onClick={() => setPageStack(prev => [...prev, 'offer'])}>{t('terms', settings.language)}</button>{' '}
               {t('and', settings.language)}{' '}
-              <span className="mobile-auth-terms-link">{t('privacyPolicy', settings.language)}</span>.
+              <button type="button" className="mobile-auth-terms-link" onClick={() => setPageStack(prev => [...prev, 'contacts'])}>{t('privacyPolicy', settings.language)}</button>.
             </p>
             <button className="mobile-auth-submit" type="submit">
               {isLogin ? t('continue', settings.language) : t('signUp', settings.language)}
@@ -1233,10 +1444,16 @@ function MobileApp() {
           </form>
         </div>
       </div>
-    )
+      {pageStack.includes('offer') && (
+        <Offer language={settings.language} onClose={() => { setPageStack(prev => prev.filter(p => p !== 'offer')); window.history.replaceState(null, '', window.location.origin) }} />
+      )}
+      {pageStack.includes('contacts') && (
+        <Contacts language={settings.language} onClose={() => { setPageStack(prev => prev.filter(p => p !== 'contacts')); window.history.replaceState(null, '', window.location.origin) }} />
+      )}
+    </>)
   }
 
-  const isInChat = tab === 'chats' && (chatView === 'thread' || chatView === 'contact')
+  const isInChat = proOpen || (tab === 'chats' && (chatView === 'thread' || chatView === 'contact'))
 
   return (
     <div className="mobile-app">
@@ -1333,7 +1550,9 @@ function MobileApp() {
                         </div>
                       )
                     }
-                    return displayChats.map(chat => (
+                    return displayChats.map(chat => {
+                      const draftPreview = getChatDraftPreview(chatInputTexts[chat.id])
+                      return (
                       <div key={chat.id} className="mobile-chat-item"
                         onClick={() => handleOpenChat(chat.id)}
                         onTouchStart={() => {
@@ -1350,12 +1569,15 @@ function MobileApp() {
                         <div className="mobile-chat-avatar"><User size={20} strokeWidth={1.5} /></div>
                         <div className="mobile-chat-info">
                           <div className="mobile-chat-name">{chat.name}</div>
-                          <div className="mobile-chat-preview">{chat.lastMessage}</div>
+                          {settings.previews === 'On' && (
+                            <div className={`mobile-chat-preview${draftPreview ? ' is-draft' : ''}`}>{draftPreview || chat.lastMessage}</div>
+                          )}
                         </div>
                         <div className="mobile-chat-time">{chat.time}</div>
                         {chat.pinned && <div className="mobile-chat-pin" />}
                       </div>
-                    ))
+                      )
+                    })
                   })()}
                 </div>
               </>
@@ -1378,7 +1600,6 @@ function MobileApp() {
                 <div className="mobile-thread-name">{activeChat.name}</div>
               </div>
               <div className="mobile-thread-actions">
-                <button className="mobile-thread-action" title={t('call', settings.language)}><Phone size={20} /></button>
                 <button className="mobile-thread-action" title={t('more', settings.language)} onClick={(e) => {
                   e.stopPropagation()
                   if (threadMenu) { setThreadMenu(null); setClearChatSubmenu(false); return }
@@ -1402,70 +1623,83 @@ function MobileApp() {
             )}
 
             <div className="mobile-thread-messages" onContextMenu={(e) => e.preventDefault()}>
-              {messages.map(msg => (
-                <div
-                  key={msg.id}
-                  id={`msg-${msg.id}`}
-                  className={`mobile-msg-row ${msg.sender === 'me' ? 'sender-me' : 'sender-them'}`}
-                  onClick={() => {
-                    if (contextMenu) setContextMenu(null)
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault()
-                    setContextMenu({ messageId: msg.id })
-                  }}
-                >
-                  <div className="mobile-msg-bubble">
-                    {msg.replyToId && (msg.replyText || msg.replyAttachmentUrl) && (
-                      <div className="mobile-msg-reply" onClick={() => { const el = document.getElementById(`msg-${msg.replyToId}`); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>
-                        <div className="mobile-msg-reply-line" />
-                        <div className="mobile-msg-reply-text">{msg.replyAttachmentUrl && !msg.replyText ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{msg.replyAttachmentType === 'image' ? <><Image size={14} /> Photo</> : <><File size={14} /> File</>}</span> : msg.replyText}</div>
+              {messages.map((msg, index) => {
+                const showDateDivider = getMessageDayKey(msg.createdAt) !== getMessageDayKey(messages[index - 1]?.createdAt)
+                return (
+                <div key={msg.id}>
+                  {showDateDivider && <div className="mobile-message-date-divider">{formatMessageDay(msg.createdAt)}</div>}
+                  <div
+                    id={`msg-${msg.id}`}
+                    className={`mobile-msg-row ${msg.sender === 'me' ? 'sender-me' : 'sender-them'}`}
+                    onClick={() => {
+                      if (contextMenu) setContextMenu(null)
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setContextMenu({ messageId: msg.id })
+                    }}
+                  >
+                    <div className="mobile-msg-bubble">
+                      {msg.replyToId && (msg.replyText || msg.replyAttachmentUrl) && (
+                        <div className="mobile-msg-reply" onClick={() => { const el = document.getElementById(`msg-${msg.replyToId}`); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>
+                          <div className="mobile-msg-reply-line" />
+                          <div className="mobile-msg-reply-text">{msg.replyAttachmentUrl && !msg.replyText ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{msg.replyAttachmentType === 'image' ? <><Image size={14} /> Photo</> : <><File size={14} /> File</>}</span> : msg.replyText}</div>
+                        </div>
+                      )}
+                      {msg.attachmentUrl && (
+                        <div className="mobile-msg-attachment">
+                          {msg.attachmentType === 'image' ? (
+                            <img src={`http://localhost:3001${msg.attachmentUrl}`} alt="" className="mobile-msg-attachment-image" onClick={() => setFullscreenImage(`http://localhost:3001${msg.attachmentUrl}`)} />
+                          ) : (
+                            <a href={`http://localhost:3001${msg.attachmentUrl}`} target="_blank" rel="noopener noreferrer" className="mobile-msg-attachment-file"><File size={16} /><span>{msg.attachmentType || 'File'}</span></a>
+                          )}
+                        </div>
+                      )}
+                      {msg.pollId && (
+                        <div className="message-poll" onClick={(e) => e.stopPropagation()}>
+                          {(() => {
+                            loadPoll(msg.pollId!)
+                            const poll = pollsCache[msg.pollId!]
+                            if (!poll) return <div className="message-poll-loading">Loading poll...</div>
+                            return (
+                              <>
+                                <div className="message-poll-question"><BarChart3 size={16} style={{ marginRight: 8, opacity: 0.7 }} />{poll.question}</div>
+                                <div className="message-poll-options">
+                                  {poll.options.map(opt => {
+                                    const percent = poll.totalVotes > 0 ? Math.round((opt.votes / poll.totalVotes) * 100) : 0
+                                    const isVoted = poll.userVote === opt.id
+                                    return (
+                                      <button key={opt.id} className={`message-poll-option${isVoted ? ' voted' : ''}`} onClick={() => handleVote(poll.id, opt.id)}>
+                                        <div className="message-poll-option-bar" style={{ width: `${percent}%` }} />
+                                        <span className="message-poll-option-text">{opt.text}</span>
+                                        {poll.userVote !== null && <span className="message-poll-option-percent">{percent}%</span>}
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                                <div className="message-poll-footer">{poll.totalVotes} vote{poll.totalVotes !== 1 ? 's' : ''}</div>
+                              </>
+                            )
+                          })()}
+                        </div>
+                      )}
+                      <div className="mobile-msg-text">{renderMessageText(msg.text)}</div>
+                      <div className="mobile-msg-meta">
+                        <span className="mobile-msg-time">{msg.time}</span>
+                        {msg.sender === 'me' && <MessageStatusIcon status={msg.status} />}
                       </div>
-                    )}
-                    {msg.attachmentUrl && (
-                      <div className="mobile-msg-attachment">
-                        {msg.attachmentType === 'image' ? (
-                          <img src={`http://localhost:3001${msg.attachmentUrl}`} alt="" className="mobile-msg-attachment-image" onClick={() => setFullscreenImage(`http://localhost:3001${msg.attachmentUrl}`)} />
-                        ) : (
-                          <a href={`http://localhost:3001${msg.attachmentUrl}`} target="_blank" rel="noopener noreferrer" className="mobile-msg-attachment-file"><File size={16} /><span>{msg.attachmentType || 'File'}</span></a>
-                        )}
-                      </div>
-                    )}
-                    {msg.pollId && (
-                      <div className="message-poll" onClick={(e) => e.stopPropagation()}>
-                        {(() => {
-                          loadPoll(msg.pollId!)
-                          const poll = pollsCache[msg.pollId!]
-                          if (!poll) return <div className="message-poll-loading">Loading poll...</div>
-                          return (
-                            <>
-                              <div className="message-poll-question"><BarChart3 size={16} style={{ marginRight: 8, opacity: 0.7 }} />{poll.question}</div>
-                              <div className="message-poll-options">
-                                {poll.options.map(opt => {
-                                  const percent = poll.totalVotes > 0 ? Math.round((opt.votes / poll.totalVotes) * 100) : 0
-                                  const isVoted = poll.userVote === opt.id
-                                  return (
-                                    <button key={opt.id} className={`message-poll-option${isVoted ? ' voted' : ''}`} onClick={() => handleVote(poll.id, opt.id)}>
-                                      <div className="message-poll-option-bar" style={{ width: `${percent}%` }} />
-                                      <span className="message-poll-option-text">{opt.text}</span>
-                                      {poll.userVote !== null && <span className="message-poll-option-percent">{percent}%</span>}
-                                    </button>
-                                  )
-                                })}
-                              </div>
-                              <div className="message-poll-footer">{poll.totalVotes} vote{poll.totalVotes !== 1 ? 's' : ''}</div>
-                            </>
-                          )
-                        })()}
-                      </div>
-                    )}
-                    <div className="mobile-msg-text">{renderMessageText(msg.text)}</div>
-                    <div className="mobile-msg-meta">
-                      <span className="mobile-msg-time">{msg.time}</span>
                     </div>
                   </div>
                 </div>
-              ))}
+                )
+              })}
+              {isPeerTyping && (
+                <div className="mobile-msg-row sender-them">
+                  <div className="mobile-msg-bubble mobile-ai-typing typing-indicator-bubble">
+                    <span className="ai-thinking">typing...</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="mobile-thread-input">
@@ -1535,6 +1769,7 @@ function MobileApp() {
                   placeholder={t('writeMessage', settings.language)}
                   value={chatInputTexts[activeChat.id] || ''}
                   onChange={(e) => handleChatInputChange(activeChat.id, e.target.value)}
+                  onPaste={handleChatPaste}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(activeChat.id) }}
                 />
                 <button
@@ -1662,6 +1897,33 @@ function MobileApp() {
               <button className="mobile-profile-action-btn icon-only" onClick={() => setProfileView('settings')}>
                 <Settings size={18} />
               </button>
+            </div>
+
+            <div className="mobile-profile-section">
+              {proStatus?.active ? (
+                <button className="mobile-pro-card mobile-pro-card-active" onClick={handleOpenPro}>
+                  <div className="mobile-pro-card-content">
+                    <span className="mobile-pro-card-title">
+                      <CheckCircle size={14} style={{ marginRight: 6, verticalAlign: -2 }} />
+                      {t('proActive', settings.language)}
+                    </span>
+                    {proStatus.end_date && (
+                      <span className="mobile-pro-card-subtitle">
+                        {t('proExpires', settings.language)}: {new Date(proStatus.end_date).toLocaleDateString()}
+                      </span>
+                    )}
+                  </div>
+                  <ChevronRight size={18} className="mobile-pro-card-chevron" />
+                </button>
+              ) : (
+                <button className="mobile-pro-card" onClick={handleOpenPro}>
+                  <div className="mobile-pro-card-content">
+                    <span className="mobile-pro-card-title">{t('upgradeToPro', settings.language)}</span>
+                    <span className="mobile-pro-card-subtitle">{t('unlockPremiumFeatures', settings.language)}</span>
+                  </div>
+                  <ChevronRight size={18} className="mobile-pro-card-chevron" />
+                </button>
+              )}
             </div>
 
           </div>
@@ -2424,6 +2686,139 @@ function MobileApp() {
             </div>
           </div>
         </div>
+      )}
+
+      {proOpen && (
+        <div className="mobile-pro-page">
+          <button className="mobile-pro-close" onClick={handleClosePro} aria-label={t('close', settings.language)}>
+            <X size={20} />
+          </button>
+          <div className="mobile-pro-content">
+            <h1 className="mobile-pro-title">
+              {t('upgradeToProLine1', settings.language)}<br />{t('upgradeToProLine2', settings.language)}
+            </h1>
+            <p className="mobile-pro-subtitle">
+              {t('proSubtitleLine1', settings.language)}<br />
+              {t('proSubtitleLine2', settings.language)}<br />
+              {t('proSubtitleLine3', settings.language)}
+            </p>
+
+            <div className="mobile-pro-features">
+              <div className="mobile-pro-feature">
+                <div className="mobile-pro-feature-icon">
+                  <svg width={22} height={20} style={{ display: 'block' }}>
+                    <use href="/icons.svg#opus-pro-icon" />
+                  </svg>
+                </div>
+                <div className="mobile-pro-feature-text">
+                  <span className="mobile-pro-feature-title">{t('opusInChats', settings.language)}</span>
+                  <span className="mobile-pro-feature-desc">{t('opusInChatsDesc', settings.language)}</span>
+                </div>
+              </div>
+              <div className="mobile-pro-feature">
+                <div className="mobile-pro-feature-icon">
+                  <Cloud size={22} strokeWidth={1.5} />
+                </div>
+                <div className="mobile-pro-feature-text">
+                  <span className="mobile-pro-feature-title">{t('doubledLimits', settings.language)}</span>
+                  <span className="mobile-pro-feature-desc">{t('doubledLimitsDesc', settings.language)}</span>
+                </div>
+              </div>
+              <div className="mobile-pro-feature">
+                <div className="mobile-pro-feature-icon">
+                  <BadgeCheck size={22} strokeWidth={1.5} />
+                </div>
+                <div className="mobile-pro-feature-text">
+                  <span className="mobile-pro-feature-title">{t('profileBadge', settings.language)}</span>
+                  <span className="mobile-pro-feature-desc">{t('profileBadgeDesc', settings.language)}</span>
+                </div>
+              </div>
+            </div>
+
+            <button className="mobile-pro-features-link">
+              {t('viewAllPlanFeatures', settings.language)}
+              <ChevronRight size={14} />
+            </button>
+          </div>
+
+          <div className="mobile-pro-sheet">
+            {proPlans.length > 0 && proPlans.map((plan: Plan) => (
+              <label key={plan.id} className="mobile-pro-plan">
+                <input
+                  type="radio"
+                  name="pro-plan"
+                  value={plan.id}
+                  checked={proPlan === (plan.id === 1 ? 'monthly' : 'annual')}
+                  onChange={() => setProPlan(plan.id === 1 ? 'monthly' : 'annual')}
+                />
+                <span className="mobile-pro-radio" />
+                <span className="mobile-pro-plan-text">
+                  <span className="mobile-pro-plan-name">
+                    {plan.id === 1 ? t('monthByMonth', settings.language) : t('annualSubscription', settings.language)}:{' '}
+                    <span className="mobile-pro-plan-price">{plan.price_rub.toLocaleString()} ₽</span>
+                  </span>
+                  {plan.id === 2 && (
+                    <span className="mobile-pro-plan-hint">{t('onlyPerMonth', settings.language)}</span>
+                  )}
+                </span>
+              </label>
+            ))}
+
+            <button
+              className={`mobile-pro-upgrade-btn${upgradeLoading ? ' loading' : ''}`}
+              disabled={upgradeLoading}
+              onClick={async () => {
+                setUpgradeLoading(true)
+                try {
+                  const planId = proPlan === 'monthly' ? 1 : 2
+                  const data = await api('/subscription/create', {
+                    method: 'POST',
+                    body: JSON.stringify({ plan_id: planId })
+                  })
+                  if (data.confirmation_url) {
+                    window.location.href = data.confirmation_url
+                  }
+              } catch (err: unknown) {
+                alert(err instanceof Error ? err.message : 'Payment failed')
+                } finally {
+                  setUpgradeLoading(false)
+                }
+              }}
+            >
+              {upgradeLoading ? '...' : t('upgrade', settings.language)}
+            </button>
+
+            <div className="mobile-pro-legal">
+              <button className="mobile-pro-legal-link" onClick={() => setPageStack(prev => [...prev, 'offer'])}>{t('termsOfService', settings.language)}</button>
+              <span>·</span>
+              <button className="mobile-pro-legal-link" onClick={() => setPageStack(prev => [...prev, 'contacts'])}>{t('contactsTitle', settings.language)}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showProSuccess && (
+        <ProSuccess
+          language={settings.language}
+          onClose={() => {
+            setShowProSuccess(false)
+            window.history.replaceState(null, '', window.location.origin)
+            api('/subscription/status').then(setProStatus).catch(() => {})
+          }}
+        />
+      )}
+
+      {pageStack.includes('offer') && (
+        <Offer language={settings.language} onClose={() => {
+          setPageStack(prev => prev.filter(p => p !== 'offer'))
+          window.history.replaceState(null, '', window.location.origin)
+        }} />
+      )}
+      {pageStack.includes('contacts') && (
+        <Contacts language={settings.language} onClose={() => {
+          setPageStack(prev => prev.filter(p => p !== 'contacts'))
+          window.history.replaceState(null, '', window.location.origin)
+        }} />
       )}
 
       {toast && <div className={`toast${toastClosing ? ' closing' : ''}`}>{toast}</div>}

@@ -7,9 +7,11 @@ import { fileURLToPath } from 'url'
 import authRoutes from './routes/auth'
 import chatsRoutes from './routes/chats'
 import foldersRoutes from './routes/folders'
+import keysRoutes from './routes/keys'
 import usersRoutes from './routes/users'
 import aiRoutes from './routes/ai'
 import pollsRoutes from './routes/polls'
+import subscriptionRoutes from './routes/subscriptions'
 import { authMiddleware } from './middleware/auth'
 import db from './db'
 
@@ -55,9 +57,14 @@ app.post('/api/upload/file', authMiddleware, upload.single('file'), (req: any, r
 app.use('/api/auth', authRoutes)
 app.use('/api/chats', chatsRoutes)
 app.use('/api/folders', foldersRoutes)
+app.use('/api/keys', keysRoutes)
 app.use('/api/users', usersRoutes)
 app.use('/api/ai', aiRoutes)
 app.use('/api/polls', pollsRoutes)
+app.use('/api/subscription', subscriptionRoutes)
+app.post('/api/webhook/yookassa', (req, res) => {
+  res.status(200).send('OK')
+})
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`)

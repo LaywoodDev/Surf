@@ -6,6 +6,20 @@ import { callAI, PROXYAPI_KEY } from './ai'
 const router = Router()
 router.use(authMiddleware)
 
+const TYPING_TTL_MS = 5000
+const typingState = new Map<string, number>()
+
+function typingKey(chatId: string | number, userId: string | number) {
+  return `${chatId}:${userId}`
+}
+
+function pruneTypingState() {
+  const now = Date.now()
+  for (const [key, expiresAt] of typingState.entries()) {
+    if (expiresAt <= now) typingState.delete(key)
+  }
+}
+
 router.get('/', (req: AuthRequest, res: Response) => {
   const chats = db.prepare(`
     SELECT c.id, 
@@ -16,6 +30,7 @@ router.get('/', (req: AuthRequest, res: Response) => {
          WHERE cp2.chat_id = c.id AND cp2.user_id != ?),
         c.name
       ) as name,
+      (SELECT u.id FROM users u JOIN chat_participants cp2 ON cp2.user_id = u.id WHERE cp2.chat_id = c.id AND cp2.user_id != ?) as participantId,
       (SELECT text FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as lastMessage,
       (SELECT created_at FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as time,
       cp.pinned as pinned
@@ -23,7 +38,7 @@ router.get('/', (req: AuthRequest, res: Response) => {
     JOIN chat_participants cp ON cp.chat_id = c.id
     WHERE cp.user_id = ?
     ORDER BY cp.pinned DESC, time DESC
-  `).all(req.userId, req.userId)
+  `).all(req.userId, req.userId, req.userId)
 
   res.json(chats.map((c: any) => ({
     ...c,
@@ -45,7 +60,7 @@ router.post('/', (req: AuthRequest, res: Response) => {
   db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chatId, req.userId)
   db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chatId, participantId)
 
-  res.status(201).json({ id: chatId, name, lastMessage: '', time: '' })
+  res.status(201).json({ id: chatId, name, participantId, lastMessage: '', time: '' })
 })
 
 router.post('/find-or-create', (req: AuthRequest, res: Response) => {
@@ -70,7 +85,7 @@ router.post('/find-or-create', (req: AuthRequest, res: Response) => {
   `).get(req.userId, otherUser.id) as any
 
   if (existingChat) {
-    res.json({ id: existingChat.id, name: `${otherUser.name} ${otherUser.surname || ''}`.trim() })
+    res.json({ id: existingChat.id, name: `${otherUser.name} ${otherUser.surname || ''}`.trim(), participantId: otherUser.id })
     return
   }
 
@@ -81,7 +96,7 @@ router.post('/find-or-create', (req: AuthRequest, res: Response) => {
   db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chatId, req.userId)
   db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chatId, otherUser.id)
 
-  res.status(201).json({ id: chatId, name: chatName })
+  res.status(201).json({ id: chatId, name: chatName, participantId: otherUser.id })
 })
 
 router.get('/:id/messages', (req: AuthRequest, res: Response) => {
@@ -104,6 +119,7 @@ router.get('/:id/messages', (req: AuthRequest, res: Response) => {
       m.attachment_url as attachmentUrl,
       m.attachment_type as attachmentType,
       m.poll_id as pollId,
+      m.status,
       u.name as senderName,
       ru.text as replyText,
       ru.attachment_url as replyAttachmentUrl,
@@ -115,11 +131,26 @@ router.get('/:id/messages', (req: AuthRequest, res: Response) => {
     ORDER BY m.created_at ASC
   `).all(cleared ? [id, cleared.cleared_at] : [id])
 
+  const ownIds: number[] = []
+  messages.forEach((m: any) => {
+    if (m.senderId !== req.userId && m.status === 'sent') {
+      ownIds.push(m.id)
+    }
+  })
+  if (ownIds.length > 0) {
+    db.prepare(`UPDATE messages SET status = 'delivered' WHERE id IN (${ownIds.map(() => '?').join(',')})`).run(...ownIds)
+    ownIds.forEach(id => {
+      const m = messages.find((mm: any) => mm.id === id)
+      if (m) m.status = 'delivered'
+    })
+  }
+
   res.json(messages.map((m: any) => ({
     id: m.id,
     sender: m.senderId === req.userId ? 'me' : 'them',
     text: m.text,
     time: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    createdAt: m.createdAt,
     senderName: m.senderName,
     replyToId: m.replyToId,
     replyText: m.replyText,
@@ -127,8 +158,81 @@ router.get('/:id/messages', (req: AuthRequest, res: Response) => {
     replyAttachmentType: m.replyAttachmentType,
     attachmentUrl: m.attachmentUrl,
     attachmentType: m.attachmentType,
-    pollId: m.pollId || undefined
+    pollId: m.pollId || undefined,
+    status: m.senderId === req.userId ? (m.status || 'sent') : undefined
   })))
+})
+
+router.post('/:id/read', (req: AuthRequest, res: Response) => {
+  const { id } = req.params
+  const { messageId } = req.body
+
+  const participant = db.prepare(
+    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
+  ).get(id, req.userId)
+
+  if (!participant) {
+    res.status(403).json({ error: 'Not a participant' })
+    return
+  }
+
+  if (messageId) {
+    db.prepare(`
+      UPDATE messages SET status = 'read'
+      WHERE chat_id = ? AND sender_id != ? AND id <= ? AND status IN ('sent', 'delivered')
+    `).run(id, req.userId, messageId)
+  }
+
+  res.json({ success: true })
+})
+
+router.post('/:id/typing', (req: AuthRequest, res: Response) => {
+  const { id } = req.params
+  const { typing } = req.body
+
+  const participant = db.prepare(
+    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
+  ).get(id, req.userId)
+
+  if (!participant) {
+    res.status(403).json({ error: 'Not a participant' })
+    return
+  }
+
+  pruneTypingState()
+  const key = typingKey(id, req.userId)
+  if (typing) {
+    typingState.set(key, Date.now() + TYPING_TTL_MS)
+  } else {
+    typingState.delete(key)
+  }
+
+  res.json({ success: true })
+})
+
+router.get('/:id/typing', (req: AuthRequest, res: Response) => {
+  const { id } = req.params
+
+  const participant = db.prepare(
+    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
+  ).get(id, req.userId)
+
+  if (!participant) {
+    res.status(403).json({ error: 'Not a participant' })
+    return
+  }
+
+  pruneTypingState()
+  const others = db.prepare(
+    'SELECT user_id as userId FROM chat_participants WHERE chat_id = ? AND user_id != ?'
+  ).all(id, req.userId) as { userId: number }[]
+
+  const typing = others.some(other => {
+    const expiresAt = typingState.get(typingKey(id, other.userId))
+    return typeof expiresAt === 'number' && expiresAt > Date.now()
+  })
+
+  res.json({ typing })
 })
 
 router.post('/:id/messages', async (req: AuthRequest, res: Response) => {
@@ -168,12 +272,14 @@ router.post('/:id/messages', async (req: AuthRequest, res: Response) => {
     sender: 'me',
     text: text?.trim() || '',
     time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    createdAt: new Date().toISOString(),
     replyToId: replyTo || undefined,
     replyText,
     replyAttachmentUrl,
     replyAttachmentType,
     attachmentUrl: attachmentUrl || undefined,
-    attachmentType: attachmentType || undefined
+    attachmentType: attachmentType || undefined,
+    status: 'sent'
   }
 
   const hasOpusMention = text?.trim().toLowerCase().includes('@opus') || false
