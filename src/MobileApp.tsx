@@ -6,13 +6,15 @@ import {
   ChevronRight, Mail, AtSign,
   Globe, Eye, Volume2, AlignLeft, Clock,
   Pin, Folder, Check, LogOut, BarChart3, CheckCircle,
-  Cloud, BadgeCheck
+  Cloud, BadgeCheck, Loader2, AlertCircle
 } from 'lucide-react'
 import { t, langName, p } from './i18n'
 import Offer from './pages/Offer'
 import Contacts from './pages/Contacts'
 import ProSuccess from './pages/ProSuccess'
 import './MobileApp.css'
+import * as e2e from './crypto'
+
 
 interface Chat {
   id: number
@@ -21,6 +23,22 @@ interface Chat {
   time: string
   pinned?: boolean
   participantId?: number
+  participantAvatar?: string
+  participantOnline?: boolean
+  participantLastSeen?: string | null
+  isGroup?: boolean
+  participantCount?: number
+  avatar?: string
+  role?: 'admin' | 'member'
+}
+
+interface GroupParticipant {
+  id: number
+  name: string
+  surname?: string
+  username?: string
+  avatar?: string
+  role?: 'admin' | 'member'
 }
 
 interface Folder {
@@ -66,7 +84,9 @@ interface Message {
   time: string
   createdAt?: string
   status?: 'sent' | 'delivered' | 'read'
+  senderId?: number
   senderName?: string
+  senderAvatar?: string
   replyToId?: number
   replyText?: string
   replyAttachmentUrl?: string
@@ -203,6 +223,17 @@ function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: () =>
   )
 }
 
+function formatLastSeen(lastSeen: string | null | undefined, online: boolean | null | undefined, lang: string): string {
+  if (online) return t('online', lang)
+  if (!lastSeen) return ''
+  const diff = Date.now() - new Date(lastSeen + 'Z').getTime()
+  if (diff < 60000) return t('lastSeenFormat', lang).replace('%s', '1 min')
+  if (diff < 3600000) return t('lastSeenFormat', lang).replace('%s', `${Math.floor(diff / 60000)} min`)
+  if (diff < 86400000) return t('lastSeenFormat', lang).replace('%s', `${Math.floor(diff / 3600000)} h`)
+  const d = new Date(lastSeen + 'Z')
+  return t('lastSeenFormat', lang).replace('%s', `${d.getDate().toString().padStart(2, '0')}.${(d.getMonth() + 1).toString().padStart(2, '0')}.${d.getFullYear()}`)
+}
+
 function AuthLogo({ size = 40 }: { size?: number }) {
   const w = size
   const h = Math.round(size * 0.58)
@@ -292,7 +323,16 @@ function MobileApp() {
   const [aiConversation, setAiConversation] = useState<{ role: 'user' | 'ai'; text: string; time?: string }[]>([])
 
   const handleRefresh = () => {
-    api('/chats').then(setChats)
+    api('/chats').then(async (data: Chat[]) => {
+      const decrypted = await Promise.all(data.map(async (c) => {
+        if (c.participantId && c.lastMessage && e2e.isEncrypted(c.lastMessage)) {
+          const key = await e2e.getSharedKey(c.participantId, localStorage.getItem('token')!)
+          if (key) c.lastMessage = await e2e.decrypt(key, c.lastMessage)
+        }
+        return c
+      }))
+      setChats(decrypted)
+    })
     api('/folders').then(setFolders)
     api('/users/me').then(u => {
       setUser(u)
@@ -415,17 +455,22 @@ function MobileApp() {
   const [contextMenu, setContextMenu] = useState<{ messageId: number } | null>(null)
   const [chatContextMenu, setChatContextMenu] = useState<{ chatId: number } | null>(null)
   const [threadMenu, setThreadMenu] = useState<{ x: number; y: number } | null>(null)
+  const [memberMenu, setMemberMenu] = useState<{ participantId: number; x: number; y: number } | null>(null)
+  const [addMemberSheetOpen, setAddMemberSheetOpen] = useState(false)
   const [clearChatSubmenu, setClearChatSubmenu] = useState(false)
+  const [deleteMessageSubmenu, setDeleteMessageSubmenu] = useState(false)
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null)
   const [avatarOpen, setAvatarOpen] = useState(false)
   const profileAvatarRef = useRef<HTMLDivElement>(null)
   const avatarCloneRef = useRef<{ clone: HTMLElement; original: HTMLElement; overlay: HTMLDivElement } | null>(null)
+  const groupInfoAddInputRef = useRef<HTMLInputElement>(null)
   const [closingThread, setClosingThread] = useState(false)
   const [closingContact, setClosingContact] = useState(false)
   const [closingSheet, setClosingSheet] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [toastClosing, setToastClosing] = useState(false)
   const typingHeartbeatRef = useRef<Record<number, number>>({})
+  const typingStopTimeoutRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
 
   const closeSheet = (type: string) => {
     if (closingSheet) return
@@ -433,6 +478,7 @@ function MobileApp() {
     setTimeout(() => {
       setAttachMenu(false)
       setContextMenu(null)
+      setDeleteMessageSubmenu(false)
       setChatContextMenu(null)
       setThreadMenu(null)
       setClearChatSubmenu(false)
@@ -449,6 +495,7 @@ function MobileApp() {
   const closeSheetImmediate = () => {
     setAttachMenu(false)
     setContextMenu(null)
+    setDeleteMessageSubmenu(false)
     setThreadMenu(null)
     setClearChatSubmenu(false)
     setChatContextMenu(null)
@@ -564,6 +611,22 @@ function MobileApp() {
   const [proPlans, setProPlans] = useState<Plan[]>([])
   const [proStatus, setProStatus] = useState<ProStatus | null>(null)
   const [upgradeLoading, setUpgradeLoading] = useState(false)
+  const [paymentError, setPaymentError] = useState<string | null>(null)
+  const [paymentErrorClosing, setPaymentErrorClosing] = useState(false)
+  const closePaymentError = () => {
+    setPaymentErrorClosing(true)
+    setTimeout(() => {
+      setPaymentError(null)
+      setPaymentErrorClosing(false)
+    }, 220)
+  }
+  const closeCreateGroup = useCallback(() => {
+    setCreateGroupClosing(true)
+    setTimeout(() => {
+      setCreateGroupOpen(false)
+      setCreateGroupClosing(false)
+    }, 220)
+  }, [])
   const [pageStack, setPageStack] = useState<string[]>(() => {
     const p = window.location.pathname
     if (p === '/offer') return ['offer']
@@ -578,6 +641,16 @@ function MobileApp() {
   const [pollQuestion, setPollQuestion] = useState('')
   const [pollOptions, setPollOptions] = useState<string[]>(['', ''])
   const [pollsCache, setPollsCache] = useState<Record<number, Poll>>({})
+
+  const [createGroupOpen, setCreateGroupOpen] = useState(false)
+  const [createGroupClosing, setCreateGroupClosing] = useState(false)
+  const [createGroupName, setCreateGroupName] = useState('')
+  const [createGroupSelected, setCreateGroupSelected] = useState<number[]>([])
+  const [groupInfoChatId, setGroupInfoChatId] = useState<number | null>(null)
+  const [groupParticipants, setGroupParticipants] = useState<GroupParticipant[]>([])
+  const [groupInfoAddQuery, setGroupInfoAddQuery] = useState('')
+  const [groupInfoAddResults, setGroupInfoAddResults] = useState<UserData[]>([])
+  const [groupAvatarUploading, setGroupAvatarUploading] = useState(false)
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings))
@@ -594,6 +667,8 @@ function MobileApp() {
             phonePrivacy: u.privacy.phone || 'Everyone',
             emailPrivacy: u.privacy.email || 'Everyone',
             bioPrivacy: u.privacy.bio || 'Everyone',
+            profilePhoto: u.privacy.profilePhoto || 'Everyone',
+            lastSeen: u.privacy.lastSeen || 'Everyone',
           }))
         }
       }).catch(() => {
@@ -606,11 +681,29 @@ function MobileApp() {
 
   useEffect(() => {
     if (isLoggedIn) {
-      api('/chats').then(setChats)
+      api('/chats').then(async (data: Chat[]) => {
+        const decrypted = await Promise.all(data.map(async (c) => {
+          if (c.participantId && c.lastMessage && e2e.isEncrypted(c.lastMessage)) {
+            const key = await e2e.getSharedKey(c.participantId, localStorage.getItem('token')!)
+            if (key) c.lastMessage = await e2e.decrypt(key, c.lastMessage)
+          }
+          return c
+        }))
+        setChats(decrypted)
+      })
       api('/folders').then(setFolders)
       api('/users/contacts').then(setContacts)
       api('/subscription/status').then(setProStatus).catch(() => {})
     }
+  }, [isLoggedIn])
+
+  useEffect(() => {
+    if (!isLoggedIn) return
+    api('/users/ping', { method: 'POST' }).catch(() => {})
+    const pingInterval = window.setInterval(() => {
+      api('/users/ping', { method: 'POST' }).catch(() => {})
+    }, 30000)
+    return () => window.clearInterval(pingInterval)
   }, [isLoggedIn])
 
   useEffect(() => {
@@ -630,9 +723,21 @@ function MobileApp() {
       return
     }
 
+    let typingStableAt = 0
+
     const pollTyping = () => {
       api(`/chats/${activeChatId}/typing`).then((res: { typing: boolean }) => {
-        setIsPeerTyping(!!res.typing)
+        const isTyping = !!res.typing
+        if (isTyping) {
+          if (!typingStableAt) typingStableAt = Date.now()
+          else if (Date.now() - typingStableAt > 15000) {
+            setIsPeerTyping(false)
+            return
+          }
+        } else {
+          typingStableAt = 0
+        }
+        setIsPeerTyping(isTyping)
       }).catch(() => setIsPeerTyping(false))
     }
 
@@ -643,24 +748,54 @@ function MobileApp() {
 
   useEffect(() => {
     if (activeChatId) {
-      api(`/chats/${activeChatId}/messages`).then((msgs: Message[]) => {
-        setMessages(msgs)
-        const chat = chats.find(c => c.id === activeChatId)
-        if (chat?.name !== 'Opus') {
-          api(`/chats/${activeChatId}/read`, { method: 'POST' }).then(() => {
-            setMessages(prev => prev.map(m => m.sender === 'them' ? { ...m, status: 'read' } : m))
-          }).catch(() => {})
-        }
-      })
-      api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
+      const fetchMessages = async () => {
+        try {
+          const msgs: Message[] = await api(`/chats/${activeChatId}/messages`)
+          const chat = chats.find(c => c.id === activeChatId)
+          if (chat?.participantId && !chat.isGroup && chat.name !== 'Opus') {
+            const key = await e2e.getSharedKey(chat.participantId, localStorage.getItem('token')!)
+            if (key) {
+              for (const m of msgs) {
+                m.text = await e2e.decrypt(key, m.text)
+              }
+            }
+          }
+          setMessages(prev => {
+            if (prev.length === msgs.length && prev.every((m, i) => m.id === msgs[i].id)) return prev
+            const hasNewThem = msgs.some(m => m.sender === 'them' && !prev.some(p => p.id === m.id))
+            if (hasNewThem) setIsPeerTyping(false)
+            return msgs
+          })
+          if (chat?.name !== 'Opus') {
+            api(`/chats/${activeChatId}/read`, { method: 'POST' }).then(() => {
+              setMessages(prev => prev.map(m => m.sender === 'them' ? { ...m, status: 'read' } : m))
+            }).catch(() => {})
+          }
+        } catch {}
+      }
+
+      fetchMessages()
+      const chat = chats.find(c => c.id === activeChatId)
+      if (chat?.isGroup) {
+        api(`/chats/${activeChatId}/participants`).then(setGroupParticipants).catch(() => setGroupParticipants([]))
+        setContactProfile(null)
+      } else {
+        api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
+      }
       api(`/polls/chat/${activeChatId}`).then((polls: Poll[]) => {
         const cacheUpdate: Record<number, Poll> = {}
         polls.forEach(p => { cacheUpdate[p.id] = p })
         setPollsCache(prev => ({ ...prev, ...cacheUpdate }))
       }).catch(() => {})
+
+      const pollInterval = window.setInterval(fetchMessages, 3000)
+      return () => {
+        window.clearInterval(pollInterval)
+      }
     }
     setMentionMenu(null)
     setViewedUser(null)
+    setGroupParticipants([])
   }, [activeChatId, chats])
 
   const opusLoadedRef = useRef(false)
@@ -736,6 +871,13 @@ function MobileApp() {
   }, [avatarOpen, closeAvatarAnim])
 
   useEffect(() => {
+    if (groupInfoChatId === null && !createGroupOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setGroupInfoChatId(null); closeCreateGroup() } }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [groupInfoChatId, createGroupOpen, closeCreateGroup])
+
+  useEffect(() => {
     if (!threadMenu) return
     const handleClick = () => { setThreadMenu(null); setClearChatSubmenu(false) }
     const handleScroll = () => { setThreadMenu(null); setClearChatSubmenu(false) }
@@ -746,6 +888,24 @@ function MobileApp() {
       document.removeEventListener('scroll', handleScroll, true)
     }
   }, [threadMenu])
+
+  useEffect(() => {
+    if (!memberMenu) return
+    const handleClick = () => { setMemberMenu(null) }
+    const handleScroll = () => { setMemberMenu(null) }
+    document.addEventListener('click', handleClick)
+    document.addEventListener('scroll', handleScroll, true)
+    return () => {
+      document.removeEventListener('click', handleClick)
+      document.removeEventListener('scroll', handleScroll, true)
+    }
+  }, [memberMenu])
+
+  useEffect(() => {
+    if (!addMemberSheetOpen) return
+    const t = setTimeout(() => groupInfoAddInputRef.current?.focus(), 100)
+    return () => clearTimeout(t)
+  }, [addMemberSheetOpen])
 
   const activeChat = chats.find(c => c.id === activeChatId)
   const hasEditChanges = editProfile.username !== (user?.username || '') || editProfile.phone !== (user?.phone || '') || editProfile.bio !== (user?.bio || '')
@@ -762,8 +922,11 @@ function MobileApp() {
     setClosingThread(true)
     setMentionMenu(null)
     if (activeChatId) {
-      delete typingHeartbeatRef.current[activeChatId]
-      api(`/chats/${activeChatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: false }) }).catch(() => {})
+      if (typingStopTimeoutRef.current[activeChatId]) {
+        clearTimeout(typingStopTimeoutRef.current[activeChatId])
+        delete typingStopTimeoutRef.current[activeChatId]
+      }
+      sendTypingFalse(activeChatId)
     }
     setTimeout(() => {
       setChatView('list')
@@ -788,31 +951,52 @@ function MobileApp() {
     new Audio(`${import.meta.env.BASE_URL}sentmessage_1.mp3`).play().catch(() => {})
   }
 
-  const handleSendMessage = (chatId: number) => {
+  const handleSendMessage = async (chatId: number) => {
     const text = chatInputTexts[chatId]?.trim()
     if (!text && pendingAttachments.length === 0) return
     setMentionMenu(null)
 
+    const chat = chats.find(c => c.id === chatId)
+    let finalText = text
+    const e2eKey = chat?.participantId && !chat?.isGroup && chat?.name !== 'Opus'
+      ? await e2e.getSharedKey(chat.participantId, localStorage.getItem('token')!)
+      : null
+    if (finalText && e2eKey) finalText = await e2e.encrypt(e2eKey, finalText)
     const atts = pendingAttachments
-    const body: any = { text, replyTo: replyTo?.messageId }
+    const body: any = { text: finalText, replyTo: replyTo?.messageId }
     if (atts.length > 0) {
       body.attachmentUrl = atts[0].url
       body.attachmentType = atts[0].type
     }
 
-    api(`/chats/${chatId}/messages`, { method: 'POST', body: JSON.stringify(body) }).then((msg: any) => {
+    api(`/chats/${chatId}/messages`, { method: 'POST', body: JSON.stringify(body) }).then(async (msg: any) => {
+      if (e2eKey) {
+        if (msg.messages && Array.isArray(msg.messages)) {
+          msg.messages = await Promise.all(msg.messages.map(async (m: any) => ({
+            ...m,
+            text: m.sender === 'me' ? await e2e.decrypt(e2eKey, m.text) : m.text
+          })))
+        } else {
+          msg.text = await e2e.decrypt(e2eKey, msg.text)
+        }
+      }
       if (msg.messages && Array.isArray(msg.messages)) {
         setMessages(prev => [...prev, ...msg.messages])
       } else {
         setMessages(prev => [...prev, msg])
       }
       playSentMessageSound()
+      if (typingStopTimeoutRef.current[chatId]) {
+        clearTimeout(typingStopTimeoutRef.current[chatId])
+        delete typingStopTimeoutRef.current[chatId]
+      }
+      sendTypingFalse(chatId)
       setChatInputTexts(prev => ({ ...prev, [chatId]: '' }))
       setReplyTo(null)
       setPendingAttachments([])
       const lastMsg = msg.messages ? msg.messages[msg.messages.length - 1] : msg
       setChats(prev => prev.map(c =>
-        c.id === chatId ? { ...c, lastMessage: lastMsg.text || lastMsg.attachmentType || 'Attachment', time: lastMsg.time } : c
+        c.id === chatId ? { ...c, lastMessage: text || lastMsg.attachmentType || 'Attachment', time: lastMsg.time } : c
       ))
       const remaining = atts.slice(1)
       if (remaining.length > 0) {
@@ -849,7 +1033,16 @@ function MobileApp() {
         userVote: null,
       }
       setPollsCache(prev => ({ ...prev, [newPoll.id]: newPoll }))
-      api(`/chats/${activeChatId}/messages`).then((msgs: any[]) => {
+      api(`/chats/${activeChatId}/messages`).then(async (msgs: any[]) => {
+        const chat = chats.find(c => c.id === activeChatId)
+        if (chat?.participantId && !chat.isGroup && chat.name !== 'Opus') {
+          const key = await e2e.getSharedKey(chat.participantId, localStorage.getItem('token')!)
+          if (key) {
+            for (const m of msgs) {
+              m.text = await e2e.decrypt(key, m.text)
+            }
+          }
+        }
         setMessages(msgs)
         const lastMsg = msgs[msgs.length - 1]
         if (lastMsg) {
@@ -886,19 +1079,118 @@ function MobileApp() {
     }).catch(err => alert(err.message))
   }
 
+  const handleCreateGroup = () => {
+    const name = createGroupName.trim()
+    if (!name || createGroupSelected.length === 0) return
+    api('/chats/group', {
+      method: 'POST',
+      body: JSON.stringify({ name, participantIds: createGroupSelected })
+    }).then((newChat: Chat) => {
+      setChats(prev => [newChat, ...prev])
+      setActiveChatId(newChat.id)
+      setChatView('thread')
+      setTab('chats')
+      closeCreateGroup()
+      setCreateGroupName('')
+      setCreateGroupSelected([])
+    }).catch(err => alert(err.message))
+  }
+
+  const fetchGroupInfoParticipants = (chatId: number) => {
+    api(`/chats/${chatId}/participants`).then(setGroupParticipants).catch(() => setGroupParticipants([]))
+  }
+
+  const handleAddGroupMember = (userId: number) => {
+    if (!groupInfoChatId) return
+    api(`/chats/${groupInfoChatId}/participants`, {
+      method: 'POST',
+      body: JSON.stringify({ userId })
+    }).then(() => {
+      fetchGroupInfoParticipants(groupInfoChatId)
+      setGroupInfoAddQuery('')
+      setGroupInfoAddResults([])
+      setChats(prev => prev.map(c => c.id === groupInfoChatId ? { ...c, participantCount: (c.participantCount || 0) + 1 } : c))
+    }).catch(err => alert(err.message))
+  }
+
+  const handleRemoveGroupMember = (userId: number) => {
+    if (!groupInfoChatId) return
+    api(`/chats/${groupInfoChatId}/participants/${userId}`, { method: 'DELETE' }).then(() => {
+      fetchGroupInfoParticipants(groupInfoChatId)
+      setGroupParticipants(prev => prev.filter(p => p.id !== userId))
+      setChats(prev => prev.map(c => c.id === groupInfoChatId ? { ...c, participantCount: Math.max(1, (c.participantCount || 1) - 1) } : c))
+    }).catch(err => alert(err.message))
+  }
+
+
+  const handleGroupAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>, chatId: number) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const formData = new FormData()
+    formData.append('avatar', file)
+    formData.append('chatId', String(chatId))
+    setGroupAvatarUploading(true)
+    try {
+      const res = await api('/upload/group-avatar', { method: 'POST', body: formData })
+      setChats(prev => prev.map(c => c.id === chatId ? { ...c, avatar: res.avatar } : c))
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Failed to upload avatar')
+    } finally {
+      setGroupAvatarUploading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!groupInfoChatId) {
+      setGroupParticipants([])
+      setGroupInfoAddQuery('')
+      setGroupInfoAddResults([])
+      return
+    }
+    fetchGroupInfoParticipants(groupInfoChatId)
+  }, [groupInfoChatId])
+
+  useEffect(() => {
+    if (!groupInfoChatId || !groupInfoAddQuery.trim()) {
+      setGroupInfoAddResults([])
+      return
+    }
+    const t = setTimeout(() => {
+      api(`/users/search?q=${encodeURIComponent(groupInfoAddQuery)}`).then((results: UserData[]) => {
+        const existingIds = new Set(groupParticipants.map(p => p.id))
+        setGroupInfoAddResults(results.filter(r => !existingIds.has(r.id)))
+      }).catch(() => setGroupInfoAddResults([]))
+    }, 300)
+    return () => clearTimeout(t)
+  }, [groupInfoAddQuery, groupParticipants, groupInfoChatId])
+
+  const sendTypingFalse = (chatId: number) => {
+    delete typingHeartbeatRef.current[chatId]
+    api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: false }) }).catch(() => {})
+  }
+
   const handleChatInputChange = (chatId: number, value: string) => {
     setChatInputTexts(prev => ({ ...prev, [chatId]: value }))
     const chat = chats.find(c => c.id === chatId)
     if (chat?.participantId && chat.name !== 'Opus') {
       const now = Date.now()
       const hasText = value.trim().length > 0
-      if (hasText && (!typingHeartbeatRef.current[chatId] || now - typingHeartbeatRef.current[chatId] > 2000)) {
-        typingHeartbeatRef.current[chatId] = now
-        api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: true }) }).catch(() => {})
+      if (hasText) {
+        if (!typingHeartbeatRef.current[chatId] || now - typingHeartbeatRef.current[chatId] > 2000) {
+          typingHeartbeatRef.current[chatId] = now
+          api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: true }) }).catch(() => {})
+        }
+        if (typingStopTimeoutRef.current[chatId]) {
+          clearTimeout(typingStopTimeoutRef.current[chatId])
+        }
+        typingStopTimeoutRef.current[chatId] = setTimeout(() => sendTypingFalse(chatId), 3000)
       }
       if (!hasText) {
-        delete typingHeartbeatRef.current[chatId]
-        api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: false }) }).catch(() => {})
+        if (typingStopTimeoutRef.current[chatId]) {
+          clearTimeout(typingStopTimeoutRef.current[chatId])
+          delete typingStopTimeoutRef.current[chatId]
+        }
+        sendTypingFalse(chatId)
       }
     }
     const input = chatInputRefs.current[chatId]
@@ -1017,10 +1309,17 @@ function MobileApp() {
     setTimeout(() => { setToast(null); setToastClosing(false) }, 1500)
   }
 
-  const deleteMessage = () => {
-    if (!contextMenu) return
-    setMessages(prev => prev.filter(m => m.id !== contextMenu.messageId))
-    setContextMenu(null)
+  const deleteMessage = (forBoth: boolean) => {
+    if (!contextMenu || !activeChatId) return
+    api(`/chats/${activeChatId}/messages/${contextMenu.messageId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ forBoth })
+    }).then(() => {
+      setMessages(prev => prev.filter(m => m.id !== contextMenu.messageId))
+      setDeleteMessageSubmenu(false)
+      setContextMenu(null)
+      closeSheetImmediate()
+    }).catch(err => alert(err.message))
   }
 
   const clearChat = (chatId: number, forBoth: boolean) => {
@@ -1162,13 +1461,15 @@ function MobileApp() {
   const selectSetting = (key: string, value: string) => {
     setSettings(prev => {
       const next = { ...prev, [key as keyof typeof prev]: value }
-      if (key === 'phonePrivacy' || key === 'emailPrivacy' || key === 'bioPrivacy') {
+      if (key === 'phonePrivacy' || key === 'emailPrivacy' || key === 'bioPrivacy' || key === 'profilePhoto' || key === 'lastSeen') {
         api('/users/me/privacy', {
           method: 'PUT',
           body: JSON.stringify({
             phone: next.phonePrivacy,
             email: next.emailPrivacy,
             bio: next.bioPrivacy,
+            profilePhoto: next.profilePhoto,
+            lastSeen: next.lastSeen,
           })
         }).catch(console.error)
       }
@@ -1295,6 +1596,13 @@ function MobileApp() {
                   setUser(data.user)
                   setIsLoggedIn(true)
                   setEditProfile({ username: data.user.username || '', phone: data.user.phone || '', bio: data.user.bio || '' })
+                  if (!e2e.hasKeys(data.user.id)) {
+                    e2e.clearCache()
+                    await e2e.generateKeyPair()
+                    localStorage.setItem('e2e_user_id', String(data.user.id))
+                    const pub = e2e.getPublicKey()
+                    if (pub) await api('/keys', { method: 'POST', body: JSON.stringify({ publicKey: pub }) })
+                  }
                 }).catch(err => alert(err.message))
               }}
             >
@@ -1398,12 +1706,19 @@ function MobileApp() {
                 api('/auth/login', {
                   method: 'POST',
                   body: JSON.stringify({ email: authForm.email, password: authForm.password })
-                }).then(data => {
+                }).then(async data => {
                   localStorage.setItem('token', data.token)
                   setToken(data.token)
                   setUser(data.user)
                   setIsLoggedIn(true)
                   setEditProfile({ username: data.user.username || '', phone: data.user.phone || '', bio: data.user.bio || '' })
+                  if (!e2e.hasKeys(data.user.id)) {
+                    e2e.clearCache()
+                    await e2e.generateKeyPair()
+                    localStorage.setItem('e2e_user_id', String(data.user.id))
+                    const pub = e2e.getPublicKey()
+                    if (pub) await api('/keys', { method: 'POST', body: JSON.stringify({ publicKey: pub }) })
+                  }
                 }).catch(err => alert(err.message))
               } else {
                 setAuthMode('register-info')
@@ -1463,9 +1778,14 @@ function MobileApp() {
           <div className="mobile-chats">
             <div className="mobile-chats-header">
               <h1 className="mobile-chats-title" onClick={handleRefresh}><span className="mobile-chats-title-text">Surf</span></h1>
-              <button className="mobile-header-btn" onClick={toggleSearch}>
-                <Search size={22} />
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="mobile-header-btn" onClick={() => setCreateGroupOpen(true)}>
+                  <Users size={22} />
+                </button>
+                <button className="mobile-header-btn" onClick={toggleSearch}>
+                  <Search size={22} />
+                </button>
+              </div>
             </div>
 
             {(searchOpen || closingSearch) && (
@@ -1494,13 +1814,18 @@ function MobileApp() {
                 {searchResults.length > 0 ? (
                   searchResults.map(u => (
                     <div key={u.id} className="mobile-chat-item" onClick={() => {
-                      api('/chats', { method: 'POST', body: JSON.stringify({ name: `${u.name} ${u.surname}`, participantId: u.id }) }).then(newChat => {
-                        setChats(prev => [newChat, ...prev])
+                      api('/chats/find-or-create', { method: 'POST', body: JSON.stringify({ username: u.username }) }).then(newChat => {
+                        setChats(prev => {
+                          if (prev.find(c => c.id === newChat.id)) return prev
+                          return [newChat, ...prev]
+                        })
                         setSearchOpen(false); setClosingSearch(false)
                         handleOpenChat(newChat.id)
                       }).catch(err => alert(err.message))
                     }}>
-                      <div className="mobile-chat-avatar"><User size={20} strokeWidth={1.5} /></div>
+                      <div className="mobile-chat-avatar" style={u.avatar ? { backgroundImage: `url(${u.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                        {!u.avatar && <User size={20} strokeWidth={1.5} />}
+                      </div>
                       <div className="mobile-chat-info">
                         <div className="mobile-chat-name">{u.name} {u.surname}</div>
                         <div className="mobile-chat-preview">{u.email}</div>
@@ -1566,11 +1891,14 @@ function MobileApp() {
                         }}
                         onContextMenu={(e) => { e.preventDefault(); handleChatLongPress(chat.id) }}
                       >
-                        <div className="mobile-chat-avatar"><User size={20} strokeWidth={1.5} /></div>
+                        <div className={`mobile-chat-avatar${chat.isGroup ? ' group-avatar' : ''}`} style={chat.isGroup ? (chat.avatar ? { backgroundImage: `url(${chat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}) : (chat.participantAvatar ? { backgroundImage: `url(${chat.participantAvatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {})}>
+                          {chat.isGroup ? (!chat.avatar && <Users size={20} strokeWidth={1.5} />) : (!chat.participantAvatar && <User size={20} strokeWidth={1.5} />)}
+                          {!chat.isGroup && <span className={`mobile-online-dot${chat.participantOnline ? ' online' : ''}`} />}
+                        </div>
                         <div className="mobile-chat-info">
                           <div className="mobile-chat-name">{chat.name}</div>
                           {settings.previews === 'On' && (
-                            <div className={`mobile-chat-preview${draftPreview ? ' is-draft' : ''}`}>{draftPreview || chat.lastMessage}</div>
+                            <div className={`mobile-chat-preview${draftPreview ? ' is-draft' : ''}`}>{draftPreview || (chat.isGroup ? (chat.lastMessage || `${chat.participantCount || 0} ${t('members', settings.language)}`) : chat.lastMessage)}</div>
                           )}
                         </div>
                         <div className="mobile-chat-time">{chat.time}</div>
@@ -1592,12 +1920,22 @@ function MobileApp() {
               <button className="mobile-thread-back" onClick={handleCloseChat}>
                 <ChevronLeft size={24} />
               </button>
-              <div className="mobile-thread-header-info" onClick={() => setChatView('contact')}>
-                <div className="mobile-thread-avatar">
-                  <User size={18} strokeWidth={1.5} />
-                  <span className="mobile-online-dot" />
+              <div className="mobile-thread-header-info" onClick={() => activeChat.isGroup ? setGroupInfoChatId(activeChat.id) : setChatView('contact')}>
+                <div className={`mobile-thread-avatar${activeChat.isGroup ? ' group-avatar' : ''}`} style={activeChat.isGroup ? (activeChat.avatar ? { backgroundImage: `url(${activeChat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}) : ((viewedUser || contactProfile)?.avatar || activeChat?.participantAvatar ? { backgroundImage: `url(${(viewedUser || contactProfile)?.avatar || activeChat?.participantAvatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {})}>
+                  {activeChat.isGroup ? (!activeChat.avatar && <Users size={18} strokeWidth={1.5} />) : (!(viewedUser || contactProfile)?.avatar && !activeChat?.participantAvatar && <User size={18} strokeWidth={1.5} />)}
+                  {!activeChat.isGroup && <span className={`mobile-online-dot${contactProfile?.online ? ' online' : ''}`} />}
                 </div>
-                <div className="mobile-thread-name">{activeChat.name}</div>
+                <div className="mobile-thread-name-wrap">
+                  <div className="mobile-thread-name">{activeChat.name}</div>
+                  {activeChat.isGroup ? (
+                    <div className="mobile-thread-status">{activeChat.participantCount || 0} {t('members', settings.language)}</div>
+                  ) : (() => {
+                    const lastSeen = (contactProfile || activeChat)?.lastSeen
+                    const online = contactProfile?.online ?? activeChat?.participantOnline
+                    const text = formatLastSeen(lastSeen, online, settings.language)
+                    return text ? <div className={`mobile-thread-status${online ? ' online' : ''}`}>{text}</div> : null
+                  })()}
+                </div>
               </div>
               <div className="mobile-thread-actions">
                 <button className="mobile-thread-action" title={t('more', settings.language)} onClick={(e) => {
@@ -1612,11 +1950,11 @@ function MobileApp() {
             {threadMenu && (
               <div className="context-menu" style={{ right: window.innerWidth - threadMenu.x, top: threadMenu.y, position: 'fixed', zIndex: 1000 }} onClick={(e) => e.stopPropagation()}>
                 {!clearChatSubmenu ? (
-                  <button className="context-menu-item" onClick={() => setClearChatSubmenu(true)}><Trash2 size={14} /><span>Clear chat</span></button>
+                  <button className="context-menu-item" onClick={() => setClearChatSubmenu(true)}><Trash2 size={14} /><span>{t('clearChat', settings.language)}</span></button>
                 ) : (
                   <>
-                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, false); setClearChatSubmenu(false) }}><User size={14} /><span>Clear for me</span></button>
-                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, true); setClearChatSubmenu(false) }}><Users size={14} /><span>Clear for everyone</span></button>
+                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, false); setClearChatSubmenu(false) }}><User size={14} /><span>{t('clearForMe', settings.language)}</span></button>
+                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, true); setClearChatSubmenu(false) }}><Users size={14} /><span>{t('clearForEveryone', settings.language)}</span></button>
                   </>
                 )}
               </div>
@@ -1640,6 +1978,9 @@ function MobileApp() {
                     }}
                   >
                     <div className="mobile-msg-bubble">
+                      {activeChat?.isGroup && msg.sender !== 'me' && msg.senderName && (
+                        <div className="mobile-msg-sender-name">{msg.senderName}</div>
+                      )}
                       {msg.replyToId && (msg.replyText || msg.replyAttachmentUrl) && (
                         <div className="mobile-msg-reply" onClick={() => { const el = document.getElementById(`msg-${msg.replyToId}`); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>
                           <div className="mobile-msg-reply-line" />
@@ -1731,7 +2072,9 @@ function MobileApp() {
                         className="mobile-mention-item"
                         onClick={() => insertMention(activeChat.id, c.username || `${c.name}${c.surname ? ' ' + c.surname : ''}`)}
                       >
-                        <div className="mobile-mention-avatar"><User size={16} strokeWidth={1.5} /></div>
+                        <div className="mobile-mention-avatar" style={c.avatar ? { backgroundImage: `url(${c.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                          {!c.avatar && <User size={16} strokeWidth={1.5} />}
+                        </div>
                         <div className="mobile-mention-info">
                           <div className="mobile-mention-name">{c.name} {c.surname}</div>
                           {c.username && <div className="mobile-mention-username">@{c.username}</div>}
@@ -1796,8 +2139,9 @@ function MobileApp() {
             <div className="mobile-profile-top">
               <div className="mobile-profile-avatar" style={(viewedUser || contactProfile)?.avatar ? { backgroundImage: `url(${(viewedUser || contactProfile)?.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center' } : {}}>
                 {!(viewedUser || contactProfile)?.avatar && <User size={40} strokeWidth={1.5} />}
+                <span className={`mobile-online-dot${(contactProfile || viewedUser)?.online ? ' online' : ''}`} />
               </div>
-              <div className="mobile-profile-name">{(viewedUser || contactProfile) ? `${(viewedUser || contactProfile)!.name} ${(viewedUser || contactProfile)!.surname}` : activeChat?.name || ''}</div>
+              <div className="mobile-profile-name">{(viewedUser || contactProfile)?.name ? `${(viewedUser || contactProfile)!.name} ${(viewedUser || contactProfile)!.surname || ''}` : activeChat?.name || ''}</div>
               {(viewedUser || contactProfile)?.bio && <div className="mobile-profile-bio">{(viewedUser || contactProfile)?.bio}</div>}
             </div>
             {(viewedUser || contactProfile) && (
@@ -1887,7 +2231,6 @@ function MobileApp() {
               </div>
               <h1 className="mobile-profile-hero-name">{user?.name || 'User'} {user?.surname || ''}</h1>
               {user?.username && <p className="mobile-profile-hero-handle">@{user.username}</p>}
-              {user?.bio && <p className="mobile-profile-hero-bio">{user.bio}</p>}
             </div>
 
             <div className="mobile-profile-actions">
@@ -2038,7 +2381,7 @@ function MobileApp() {
                       <User size={18} />
                     </div>
                     <span className="mobile-settings-label">{t('name', settings.language)}</span>
-                    <span className="mobile-settings-value">{user?.name || ''}</span>
+                    <span className="mobile-settings-value">{user?.name || ''}{user?.surname ? ` ${user.surname}` : ''}</span>
                   </div>
                   <div className="mobile-settings-row">
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#FA4442' }}>
@@ -2107,6 +2450,157 @@ function MobileApp() {
           </div>
         )}
       </div>
+
+      {createGroupOpen && (
+        <div className={`mobile-group-page${createGroupClosing ? ' closing' : ''}`} onClick={closeCreateGroup}>
+          <div className={`mobile-group-page-inner${createGroupClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-group-header">
+              <button className="mobile-thread-back" onClick={closeCreateGroup}><ChevronLeft size={24} /></button>
+              <div className="mobile-thread-name" style={{ flex: 1, textAlign: 'center' }}>{t('newGroup', settings.language)}</div>
+              <button
+                className="mobile-group-create-btn"
+                disabled={!createGroupName.trim() || createGroupSelected.length === 0}
+                onClick={handleCreateGroup}
+              >{t('create', settings.language)}</button>
+            </div>
+            <div style={{ padding: '0 16px 12px' }}>
+              <input
+                className="mobile-opus-input"
+                style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 12, padding: '12px 14px' }}
+                placeholder={t('groupName', settings.language)}
+                value={createGroupName}
+                onChange={e => setCreateGroupName(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="mobile-group-section-title">{t('selectMembers', settings.language)}</div>
+            <div className="mobile-group-list">
+              {chats.filter(c => !c.isGroup && c.participantId && c.name !== 'Opus').map(contact => {
+                const selected = createGroupSelected.includes(contact.participantId!)
+                return (
+                  <button key={contact.participantId} className="mobile-group-member" onClick={() => {
+                    setCreateGroupSelected(prev => selected ? prev.filter(id => id !== contact.participantId) : [...prev, contact.participantId!])
+                  }}>
+                    <div className="mobile-chat-avatar" style={contact.participantAvatar ? { backgroundImage: `url(${contact.participantAvatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                      {!contact.participantAvatar && <User size={20} strokeWidth={1.5} />}
+                    </div>
+                    <div className="mobile-chat-info" style={{ alignItems: 'flex-start' }}>
+                      <div className="mobile-chat-name">{contact.name}</div>
+                    </div>
+                    <div style={{ width: 22, height: 22, borderRadius: '50%', border: '2px solid #8c8c88', background: selected ? '#3287FE' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {selected && <Check size={14} color="#fff" />}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {groupInfoChatId && (
+        <div className="mobile-group-page" onClick={() => setGroupInfoChatId(null)}>
+          <div className="mobile-group-page-inner" onClick={e => e.stopPropagation()}>
+            {(() => {
+              const chat = chats.find(c => c.id === groupInfoChatId)
+              const isAdmin = chat?.role === 'admin'
+              return (
+                <>
+                  <div className="mobile-thread-header">
+                    <button className="mobile-thread-back" onClick={() => setGroupInfoChatId(null)}><ChevronLeft size={24} /></button>
+                    <div className="mobile-thread-name" style={{ flex: 1, textAlign: 'center' }}>{t('groupInfo', settings.language)}</div>
+                    <div style={{ width: 44 }} />
+                  </div>
+                  <div className="mobile-profile-top">
+                    <label className="mobile-profile-avatar group-avatar" style={chat?.avatar ? { backgroundImage: `url(${chat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent', cursor: isAdmin ? 'pointer' : 'default' } : { cursor: isAdmin ? 'pointer' : 'default' }}>
+                      {!chat?.avatar && <Users size={40} strokeWidth={1.5} />}
+                      {isAdmin && <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handleGroupAvatarChange(e, groupInfoChatId)} />}
+                      {groupAvatarUploading && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', borderRadius: '50%' }}><Loader2 size={20} className="btn-spinner" /></div>}
+                    </label>
+                    <div className="mobile-profile-name">{chat?.name}</div>
+                    {isAdmin && (
+                      <button className="mobile-group-add-btn" onClick={() => { setGroupInfoAddQuery(''); setGroupInfoAddResults([]); setAddMemberSheetOpen(true) }}>
+                        <Plus size={22} />
+                        <span>{t('add', settings.language)}</span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="mobile-profile-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    <div className="mobile-profile-section-title">{t('members', settings.language)}</div>
+                    <div className="mobile-profile-card" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                      <div className="mobile-group-list" style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
+                    {groupParticipants.map(p => (
+                      <div key={p.id} className="mobile-group-member" style={{ cursor: p.id === user?.id ? 'default' : 'pointer' }} onClick={() => { if (!p.username || p.id === user?.id) return; openChatWithUser(p.username); setGroupInfoChatId(null) }}>
+                        <div className="mobile-chat-avatar" style={p.avatar ? { backgroundImage: `url(${p.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                          {!p.avatar && <User size={20} strokeWidth={1.5} />}
+                        </div>
+                        <div className="mobile-chat-info" style={{ alignItems: 'flex-start' }}>
+                          <div className="mobile-chat-name">{p.name} {p.surname}</div>
+                          {p.username && <div className="mobile-chat-preview">@{p.username}</div>}
+                        </div>
+                        {p.role === 'admin' && <span style={{ fontSize: 11, color: '#3287FE', textTransform: 'capitalize' }}>{t('admin', settings.language)}</span>}
+                        {isAdmin && p.id !== user?.id && (
+                          <>
+                            <button className="mobile-thread-back" style={{ width: 32, height: 32 }} title={t('more', settings.language)} onClick={(e) => {
+                              e.stopPropagation()
+                              if (memberMenu?.participantId === p.id) { setMemberMenu(null); return }
+                              const rect = e.currentTarget.getBoundingClientRect()
+                              setMemberMenu({ participantId: p.id, x: rect.right, y: rect.bottom + 8 })
+                            }}><MoreVertical size={18} /></button>
+                            {memberMenu?.participantId === p.id && (
+                              <div className="context-menu" style={{ right: window.innerWidth - memberMenu.x, top: memberMenu.y, position: 'fixed', zIndex: 1000 }} onClick={(e) => e.stopPropagation()}>
+                                <button className="context-menu-item context-menu-item-danger" onClick={() => { handleRemoveGroupMember(p.id); setMemberMenu(null) }}><Trash2 size={14} /><span>{t('removeMember', settings.language)}</span></button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+                </>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* ===== BOTTOM SHEET: Add Member ===== */}
+      {addMemberSheetOpen && (
+        <div className="mobile-sheet-overlay" onClick={() => setAddMemberSheetOpen(false)}>
+          <div className="mobile-sheet" onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            <div style={{ padding: '0 8px 12px' }}>
+              <input
+                ref={groupInfoAddInputRef}
+                className="mobile-opus-input"
+                style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 12, padding: '12px 14px', width: '100%' }}
+                placeholder={t('searchUsers', settings.language)}
+                value={groupInfoAddQuery}
+                onChange={e => setGroupInfoAddQuery(e.target.value)}
+              />
+            </div>
+            {groupInfoAddResults.length > 0 && (
+              <div className="mobile-group-list" style={{ padding: '0 8px' }}>
+                {groupInfoAddResults.map(u => (
+                  <button key={u.id} className="mobile-group-member" onClick={() => { handleAddGroupMember(u.id); setAddMemberSheetOpen(false) }}>
+                    <div className="mobile-chat-avatar" style={u.avatar ? { backgroundImage: `url(${u.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                      {!u.avatar && <User size={20} strokeWidth={1.5} />}
+                    </div>
+                    <div className="mobile-chat-info" style={{ alignItems: 'flex-start' }}>
+                      <div className="mobile-chat-name">{u.name} {u.surname}</div>
+                      {u.username && <div className="mobile-chat-preview">@{u.username}</div>}
+                    </div>
+                    <Plus size={20} color="#3287FE" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ===== BOTTOM TAB BAR ===== */}
       <div
@@ -2258,21 +2752,34 @@ function MobileApp() {
         <div className={`mobile-sheet-overlay${closingSheet === 'context' ? ' closing' : ''}`} onClick={() => closeSheet('context')}>
           <div className={`mobile-sheet${closingSheet === 'context' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
             <div className="mobile-sheet-handle" />
-            <button className="mobile-sheet-item" onClick={() => {
-              if (contextMenu) {
-                const msg = messages.find(m => m.id === contextMenu.messageId)
-                if (msg) setReplyTo({ messageId: msg.id, text: msg.text, attachmentUrl: msg.attachmentUrl, attachmentType: msg.attachmentType })
-              }
-              closeSheetImmediate()
-            }}>
-              <Reply size={18} /><span>{t('reply', settings.language)}</span>
-            </button>
-            <button className="mobile-sheet-item" onClick={() => { copyMessage(); closeSheetImmediate() }}>
-              <Copy size={18} /><span>{t('copy', settings.language)}</span>
-            </button>
-            <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { deleteMessage(); closeSheetImmediate() }}>
-              <Trash2 size={18} /><span>{t('delete', settings.language)}</span>
-            </button>
+            {!deleteMessageSubmenu ? (
+              <>
+                <button className="mobile-sheet-item" onClick={() => {
+                  if (contextMenu) {
+                    const msg = messages.find(m => m.id === contextMenu.messageId)
+                    if (msg) setReplyTo({ messageId: msg.id, text: msg.text, attachmentUrl: msg.attachmentUrl, attachmentType: msg.attachmentType })
+                  }
+                  closeSheetImmediate()
+                }}>
+                  <Reply size={18} /><span>{t('reply', settings.language)}</span>
+                </button>
+                <button className="mobile-sheet-item" onClick={() => { copyMessage(); closeSheetImmediate() }}>
+                  <Copy size={18} /><span>{t('copy', settings.language)}</span>
+                </button>
+                <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => setDeleteMessageSubmenu(true)}>
+                  <Trash2 size={18} /><span>{t('delete', settings.language)}</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button className="mobile-sheet-item" onClick={() => deleteMessage(false)}>
+                  <User size={18} /><span>{t('clearForMe', settings.language)}</span>
+                </button>
+                <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => deleteMessage(true)}>
+                  <Users size={18} /><span>{t('clearForEveryone', settings.language)}</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -2629,29 +3136,29 @@ function MobileApp() {
         <div className="poll-modal-overlay" onClick={() => setPollModalOpen(false)}>
           <div className="poll-modal" onClick={e => e.stopPropagation()}>
             <div className="poll-modal-header">
-              <h2 className="poll-modal-title">New Poll</h2>
+              <h2 className="poll-modal-title">{t('newPoll', settings.language)}</h2>
               <button className="poll-modal-close" onClick={() => setPollModalOpen(false)}><X size={18} /></button>
             </div>
             <div className="poll-modal-body">
               <div className="poll-question-wrap">
-                <label className="poll-label">Question</label>
+                <label className="poll-label">{t('question', settings.language)}</label>
                 <input
                   className="poll-question-input"
-                  placeholder="Ask something..."
+                  placeholder={t('askSomething', settings.language)}
                   value={pollQuestion}
                   onChange={e => setPollQuestion(e.target.value)}
                   autoFocus
                 />
               </div>
               <div className="poll-options-wrap">
-                <label className="poll-label">Options</label>
+                <label className="poll-label">{t('options', settings.language)}</label>
                 <div className="poll-options-list">
                   {pollOptions.map((opt, idx) => (
                     <div key={idx} className="poll-option-row">
                       <span className="poll-option-badge">{String.fromCharCode(65 + idx)}</span>
                       <input
                         className="poll-option-input"
-                        placeholder={`Option ${idx + 1}`}
+                        placeholder={`${t('option', settings.language)} ${idx + 1}`}
                         value={opt}
                         onChange={e => {
                           const next = [...pollOptions]
@@ -2669,19 +3176,19 @@ function MobileApp() {
                 </div>
                 {pollOptions.length < 10 && (
                   <button className="poll-add-option" onClick={() => setPollOptions(prev => [...prev, ''])}>
-                    <Plus size={16} /><span>Add option</span>
+                    <Plus size={16} /><span>{t('addOption', settings.language)}</span>
                   </button>
                 )}
               </div>
             </div>
             <div className="poll-modal-footer">
-              <button className="poll-btn poll-btn-secondary" onClick={() => setPollModalOpen(false)}>Cancel</button>
+              <button className="poll-btn poll-btn-secondary" onClick={() => setPollModalOpen(false)}>{t('cancel', settings.language)}</button>
               <button
                 className="poll-btn poll-btn-primary"
                 disabled={!pollQuestion.trim() || pollOptions.filter(o => o.trim()).length < 2}
                 onClick={handleCreatePoll}
               >
-                Create Poll
+                {t('createPoll', settings.language)}
               </button>
             </div>
           </div>
@@ -2779,13 +3286,13 @@ function MobileApp() {
                     window.location.href = data.confirmation_url
                   }
               } catch (err: unknown) {
-                alert(err instanceof Error ? err.message : 'Payment failed')
+                setPaymentError(err instanceof Error ? err.message : 'Payment failed')
                 } finally {
                   setUpgradeLoading(false)
                 }
               }}
             >
-              {upgradeLoading ? '...' : t('upgrade', settings.language)}
+              {upgradeLoading ? <Loader2 size={20} className="btn-spinner" /> : t('upgrade', settings.language)}
             </button>
 
             <div className="mobile-pro-legal">
@@ -2793,6 +3300,21 @@ function MobileApp() {
               <span>·</span>
               <button className="mobile-pro-legal-link" onClick={() => setPageStack(prev => [...prev, 'contacts'])}>{t('contactsTitle', settings.language)}</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {paymentError && (
+        <div className={`payment-error-overlay${paymentErrorClosing ? ' closing' : ''}`} onClick={closePaymentError}>
+          <div className={`payment-error-modal${paymentErrorClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+            <div className="payment-error-icon">
+              <AlertCircle size={36} />
+            </div>
+            <h2 className="payment-error-title">{t('paymentError', settings.language)}</h2>
+            <p className="payment-error-message">{paymentError}</p>
+            <button className="payment-error-btn" onClick={closePaymentError}>
+              {t('close', settings.language)}
+            </button>
           </div>
         </div>
       )}

@@ -1,26 +1,49 @@
-import { Router, Response } from 'express'
-import db from '../db'
-import { authMiddleware, AuthRequest } from '../middleware/auth'
-import { callAI, PROXYAPI_KEY } from './ai'
+import re
 
-const router = Router()
-router.use(authMiddleware)
+with open('server/src/routes/chats.ts', 'r', encoding='utf-8') as f:
+    content = f.read()
 
-const TYPING_TTL_MS = 5000
-const typingState = new Map<string, number>()
+# 1. Update GET /
+old_get = '''router.get('/', (req: AuthRequest, res: Response) => {
+  const chats = db.prepare(`
+    SELECT c.id, 
+      COALESCE(
+        (SELECT u.name || ' ' || NULLIF(u.surname, '') 
+         FROM users u 
+         JOIN chat_participants cp2 ON cp2.user_id = u.id 
+         WHERE cp2.chat_id = c.id AND cp2.user_id != ?),
+        c.name
+      ) as name,
+      (SELECT u.id FROM users u JOIN chat_participants cp2 ON cp2.user_id = u.id WHERE cp2.chat_id = c.id AND cp2.user_id != ?) as participantId,
+      (SELECT u.avatar FROM users u JOIN chat_participants cp2 ON cp2.user_id = u.id WHERE cp2.chat_id = c.id AND cp2.user_id != ?) as participantAvatar,
+      (SELECT u.last_seen FROM users u JOIN chat_participants cp2 ON cp2.user_id = u.id WHERE cp2.chat_id = c.id AND cp2.user_id != ?) as participantLastSeen,
+      (SELECT u.privacy FROM users u JOIN chat_participants cp2 ON cp2.user_id = u.id WHERE cp2.chat_id = c.id AND cp2.user_id != ?) as participantPrivacy,
+      (SELECT text FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as lastMessage,
+      (SELECT created_at FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as time,
+      cp.pinned as pinned
+    FROM chats c
+    JOIN chat_participants cp ON cp.chat_id = c.id
+    WHERE cp.user_id = ?
+    ORDER BY cp.pinned DESC, time DESC
+  `).all(req.userId, req.userId, req.userId, req.userId, req.userId, req.userId)
 
-function typingKey(chatId: string | number, userId: string | number) {
-  return `${chatId}:${userId}`
-}
+  res.json(chats.map((c: any) => {
+    const online = c.participantLastSeen ? (Date.now() - new Date(c.participantLastSeen + 'Z').getTime() < 30000) : false
+    const pp = JSON.parse(c.participantPrivacy || '{"profilePhoto":"Everyone","lastSeen":"Everyone"}')
+    if (pp.profilePhoto === 'Nobody') c.participantAvatar = null
+    const showLastSeen = pp.lastSeen !== 'Nobody'
+    const { participantPrivacy, ...rest } = c
+    return {
+      ...rest,
+      participantOnline: showLastSeen ? online : false,
+      participantLastSeen: showLastSeen ? c.participantLastSeen : null,
+      pinned: !!c.pinned,
+      time: c.time ? new Date(c.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
+    }
+  }))
+})'''
 
-function pruneTypingState() {
-  const now = Date.now()
-  for (const [key, expiresAt] of typingState.entries()) {
-    if (expiresAt <= now) typingState.delete(key)
-  }
-}
-
-router.get('/', (req: AuthRequest, res: Response) => {
+new_get = '''router.get('/', (req: AuthRequest, res: Response) => {
   const chats = db.prepare(`
     SELECT c.id, 
       c.name,
@@ -37,8 +60,7 @@ router.get('/', (req: AuthRequest, res: Response) => {
       (SELECT u.privacy FROM users u JOIN chat_participants cp2 ON cp2.user_id = u.id WHERE cp2.chat_id = c.id AND cp2.user_id != ?) as participantPrivacy,
       (SELECT text FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as lastMessage,
       (SELECT created_at FROM messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as time,
-      cp.pinned as pinned,
-      cp.role as role
+      cp.pinned as pinned
     FROM chats c
     JOIN chat_participants cp ON cp.chat_id = c.id
     WHERE cp.user_id = ?
@@ -67,9 +89,44 @@ router.get('/', (req: AuthRequest, res: Response) => {
       time: c.time ? new Date(c.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
     }
   }))
-})
+})'''
 
-router.post('/', (req: AuthRequest, res: Response) => {
+if old_get not in content:
+    print('ERROR: GET / block not found')
+    exit(1)
+content = content.replace(old_get, new_get)
+
+# 2. Update POST / to include is_group=0 and role
+old_post = '''router.post('/', (req: AuthRequest, res: Response) => {
+  const { name, participantId } = req.body
+  if (!name || !participantId) {
+    res.status(400).json({ error: 'Chat name and participantId are required' })
+    return
+  }
+
+  const existingChat = db.prepare(`
+    SELECT c.id
+    FROM chats c
+    JOIN chat_participants cp1 ON cp1.chat_id = c.id
+    JOIN chat_participants cp2 ON cp2.chat_id = c.id
+    WHERE cp1.user_id = ? AND cp2.user_id = ?
+  `).get(req.userId, participantId) as any
+
+  if (existingChat) {
+    res.json({ id: existingChat.id, name, participantId, lastMessage: '', time: '' })
+    return
+  }
+
+  const chat = db.prepare('INSERT INTO chats (name) VALUES (?)').run(name)
+  const chatId = chat.lastInsertRowid as number
+
+  db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chatId, req.userId)
+  db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chatId, participantId)
+
+  res.status(201).json({ id: chatId, name, participantId, lastMessage: '', time: '' })
+})'''
+
+new_post = '''router.post('/', (req: AuthRequest, res: Response) => {
   const { name, participantId } = req.body
   if (!name || !participantId) {
     res.status(400).json({ error: 'Chat name and participantId are required' })
@@ -96,9 +153,51 @@ router.post('/', (req: AuthRequest, res: Response) => {
   db.prepare('INSERT INTO chat_participants (chat_id, user_id, role) VALUES (?, ?, ?)').run(chatId, participantId, 'admin')
 
   res.status(201).json({ id: chatId, name, participantId, lastMessage: '', time: '' })
-})
+})'''
 
-router.post('/find-or-create', (req: AuthRequest, res: Response) => {
+if old_post not in content:
+    print('ERROR: POST / block not found')
+    exit(1)
+content = content.replace(old_post, new_post)
+
+# 3. Update find-or-create
+old_find = '''router.post('/find-or-create', (req: AuthRequest, res: Response) => {
+  const { username } = req.body
+  if (!username) {
+    res.status(400).json({ error: 'Username is required' })
+    return
+  }
+
+  const otherUser = db.prepare('SELECT id, name, surname FROM users WHERE username = ?').get(username) as any
+  if (!otherUser) {
+    res.status(404).json({ error: 'User not found' })
+    return
+  }
+
+  const existingChat = db.prepare(`
+    SELECT c.id 
+    FROM chats c
+    JOIN chat_participants cp1 ON cp1.chat_id = c.id
+    JOIN chat_participants cp2 ON cp2.chat_id = c.id
+    WHERE cp1.user_id = ? AND cp2.user_id = ?
+  `).get(req.userId, otherUser.id) as any
+
+  if (existingChat) {
+    res.json({ id: existingChat.id, name: `${otherUser.name} ${otherUser.surname || ''}`.trim(), participantId: otherUser.id })
+    return
+  }
+
+  const chatName = `${otherUser.name} ${otherUser.surname || ''}`.trim()
+  const chat = db.prepare('INSERT INTO chats (name) VALUES (?)').run(chatName)
+  const chatId = chat.lastInsertRowid as number
+
+  db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chatId, req.userId)
+  db.prepare('INSERT INTO chat_participants (chat_id, user_id) VALUES (?, ?)').run(chatId, otherUser.id)
+
+  res.status(201).json({ id: chatId, name: chatName, participantId: otherUser.id })
+})'''
+
+new_find = '''router.post('/find-or-create', (req: AuthRequest, res: Response) => {
   const { username } = req.body
   if (!username) {
     res.status(400).json({ error: 'Username is required' })
@@ -132,23 +231,34 @@ router.post('/find-or-create', (req: AuthRequest, res: Response) => {
   db.prepare('INSERT INTO chat_participants (chat_id, user_id, role) VALUES (?, ?, ?)').run(chatId, otherUser.id, 'admin')
 
   res.status(201).json({ id: chatId, name: chatName, participantId: otherUser.id })
-})
+})'''
 
-router.get('/:id/messages', (req: AuthRequest, res: Response) => {
-  const { id } = req.params
+if old_find not in content:
+    print('ERROR: find-or-create block not found')
+    exit(1)
+content = content.replace(old_find, new_find)
 
-  const participant = db.prepare(
-    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
-  ).get(id, req.userId)
+# 4. Update GET /:id/messages to include senderAvatar
+old_get_messages = '''  const messages = db.prepare(`
+    SELECT m.id, m.text, m.sender_id as senderId, m.created_at as createdAt,
+      m.reply_to_id as replyToId,
+      m.attachment_url as attachmentUrl,
+      m.attachment_type as attachmentType,
+      m.poll_id as pollId,
+      m.status,
+      u.name as senderName,
+      ru.text as replyText,
+      ru.attachment_url as replyAttachmentUrl,
+      ru.attachment_type as replyAttachmentType
+    FROM messages m
+    JOIN users u ON u.id = m.sender_id
+    LEFT JOIN messages ru ON ru.id = m.reply_to_id
+    LEFT JOIN deleted_messages dm ON dm.message_id = m.id AND dm.user_id = ?
+    WHERE m.chat_id = ? ${cleared ? 'AND m.created_at > ?' : ''} AND dm.message_id IS NULL
+    ORDER BY m.created_at ASC
+  `).all(cleared ? [req.userId, id, cleared.cleared_at] : [req.userId, id])'''
 
-  if (!participant) {
-    res.status(403).json({ error: 'Not a participant' })
-    return
-  }
-
-  const cleared = db.prepare('SELECT cleared_at FROM cleared_chats WHERE chat_id = ? AND user_id = ?').get(id, req.userId) as any
-
-  const messages = db.prepare(`
+new_get_messages = '''  const messages = db.prepare(`
     SELECT m.id, m.text, m.sender_id as senderId, m.created_at as createdAt,
       m.reply_to_id as replyToId,
       m.attachment_url as attachmentUrl,
@@ -166,23 +276,32 @@ router.get('/:id/messages', (req: AuthRequest, res: Response) => {
     LEFT JOIN deleted_messages dm ON dm.message_id = m.id AND dm.user_id = ?
     WHERE m.chat_id = ? ${cleared ? 'AND m.created_at > ?' : ''} AND dm.message_id IS NULL
     ORDER BY m.created_at ASC
-  `).all(cleared ? [req.userId, id, cleared.cleared_at] : [req.userId, id])
+  `).all(cleared ? [req.userId, id, cleared.cleared_at] : [req.userId, id])'''
 
-  const ownIds: number[] = []
-  messages.forEach((m: any) => {
-    if (m.senderId !== req.userId && m.status === 'sent') {
-      ownIds.push(m.id)
-    }
-  })
-  if (ownIds.length > 0) {
-    db.prepare(`UPDATE messages SET status = 'delivered' WHERE id IN (${ownIds.map(() => '?').join(',')})`).run(...ownIds)
-    ownIds.forEach(id => {
-      const m = messages.find((mm: any) => mm.id === id)
-      if (m) m.status = 'delivered'
-    })
-  }
+if old_get_messages not in content:
+    print('ERROR: GET messages block not found')
+    exit(1)
+content = content.replace(old_get_messages, new_get_messages)
 
-  res.json(messages.map((m: any) => ({
+# Update response mapping for messages to include senderAvatar
+old_msg_map = '''  res.json(messages.map((m: any) => ({
+    id: m.id,
+    sender: m.senderId === req.userId ? 'me' : 'them',
+    text: m.text,
+    time: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    createdAt: m.createdAt,
+    senderName: m.senderName,
+    replyToId: m.replyToId,
+    replyText: m.replyText,
+    replyAttachmentUrl: m.replyAttachmentUrl,
+    replyAttachmentType: m.replyAttachmentType,
+    attachmentUrl: m.attachmentUrl,
+    attachmentType: m.attachmentType,
+    pollId: m.pollId || undefined,
+    status: m.senderId === req.userId ? (m.status || 'sent') : undefined
+  })))'''
+
+new_msg_map = '''  res.json(messages.map((m: any) => ({
     id: m.id,
     sender: m.senderId === req.userId ? 'me' : 'them',
     text: m.text,
@@ -199,114 +318,30 @@ router.get('/:id/messages', (req: AuthRequest, res: Response) => {
     attachmentType: m.attachmentType,
     pollId: m.pollId || undefined,
     status: m.senderId === req.userId ? (m.status || 'sent') : undefined
-  })))
-})
+  })))'''
 
-router.post('/:id/read', (req: AuthRequest, res: Response) => {
-  const { id } = req.params
-  const { messageId } = req.body
+if old_msg_map not in content:
+    print('ERROR: messages response map not found')
+    exit(1)
+content = content.replace(old_msg_map, new_msg_map)
 
-  const participant = db.prepare(
-    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
-  ).get(id, req.userId)
+# 5. Update POST /:id/messages response to include senderName and senderAvatar
+old_post_msg_user = '''  const userMsg = {
+    id: result.lastInsertRowid,
+    sender: 'me',
+    text: text?.trim() || '',
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    createdAt: new Date().toISOString(),
+    replyToId: replyTo || undefined,
+    replyText,
+    replyAttachmentUrl,
+    replyAttachmentType,
+    attachmentUrl: attachmentUrl || undefined,
+    attachmentType: attachmentType || undefined,
+    status: 'sent'
+  }'''
 
-  if (!participant) {
-    res.status(403).json({ error: 'Not a participant' })
-    return
-  }
-
-  if (messageId) {
-    db.prepare(`
-      UPDATE messages SET status = 'read'
-      WHERE chat_id = ? AND sender_id != ? AND id <= ? AND status IN ('sent', 'delivered')
-    `).run(id, req.userId, messageId)
-  }
-
-  res.json({ success: true })
-})
-
-router.post('/:id/typing', (req: AuthRequest, res: Response) => {
-  const { id } = req.params
-  const { typing } = req.body
-
-  const participant = db.prepare(
-    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
-  ).get(id, req.userId)
-
-  if (!participant) {
-    res.status(403).json({ error: 'Not a participant' })
-    return
-  }
-
-  pruneTypingState()
-  const key = typingKey(id, req.userId)
-  if (typing) {
-    typingState.set(key, Date.now() + TYPING_TTL_MS)
-  } else {
-    typingState.delete(key)
-  }
-
-  res.json({ success: true })
-})
-
-router.get('/:id/typing', (req: AuthRequest, res: Response) => {
-  const { id } = req.params
-
-  const participant = db.prepare(
-    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
-  ).get(id, req.userId)
-
-  if (!participant) {
-    res.status(403).json({ error: 'Not a participant' })
-    return
-  }
-
-  pruneTypingState()
-  const others = db.prepare(
-    'SELECT user_id as userId FROM chat_participants WHERE chat_id = ? AND user_id != ?'
-  ).all(id, req.userId) as { userId: number }[]
-
-  const typing = others.some(other => {
-    const expiresAt = typingState.get(typingKey(id, other.userId))
-    return typeof expiresAt === 'number' && expiresAt > Date.now()
-  })
-
-  res.json({ typing })
-})
-
-router.post('/:id/messages', async (req: AuthRequest, res: Response) => {
-  const { id } = req.params
-  const { text, replyTo, attachmentUrl, attachmentType } = req.body
-
-  if (!text?.trim() && !attachmentUrl) {
-    res.status(400).json({ error: 'Message text or attachment is required' })
-    return
-  }
-
-  const participant = db.prepare(
-    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
-  ).get(id, req.userId)
-
-  if (!participant) {
-    res.status(403).json({ error: 'Not a participant' })
-    return
-  }
-
-  const result = db.prepare(
-    'INSERT INTO messages (chat_id, sender_id, text, reply_to_id, attachment_url, attachment_type) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(id, req.userId, text?.trim() || '', replyTo || null, attachmentUrl || null, attachmentType || null)
-
-  let replyText, replyAttachmentUrl, replyAttachmentType
-  if (replyTo) {
-    const replied = db.prepare('SELECT text, attachment_url, attachment_type FROM messages WHERE id = ?').get(replyTo) as any
-    if (replied) {
-      replyText = replied.text
-      replyAttachmentUrl = replied.attachment_url
-      replyAttachmentType = replied.attachment_type
-    }
-  }
-
-  const sender = db.prepare('SELECT name, avatar FROM users WHERE id = ?').get(req.userId) as any
+new_post_msg_user = '''  const sender = db.prepare('SELECT name, avatar FROM users WHERE id = ?').get(req.userId) as any
   const userMsg = {
     id: result.lastInsertRowid,
     sender: 'me',
@@ -323,45 +358,24 @@ router.post('/:id/messages', async (req: AuthRequest, res: Response) => {
     attachmentUrl: attachmentUrl || undefined,
     attachmentType: attachmentType || undefined,
     status: 'sent'
-  }
+  }'''
 
-  const hasOpusMention = text?.trim().toLowerCase().includes('@opus') || false
-  if (!hasOpusMention || !PROXYAPI_KEY) {
-    res.status(201).json(userMsg)
-    return
-  }
+if old_post_msg_user not in content:
+    print('ERROR: POST messages userMsg block not found')
+    exit(1)
+content = content.replace(old_post_msg_user, new_post_msg_user)
 
-  try {
-    const chatMessages = db.prepare(`
-      SELECT m.text, u.name as senderName
-      FROM messages m
-      JOIN users u ON u.id = m.sender_id
-      WHERE m.chat_id = ?
-      ORDER BY m.created_at DESC
-      LIMIT 15
-    `).all(id) as { text: string; senderName: string }[]
+# Update aiMsg response too
+old_ai_msg = '''      const aiMsg = {
+        id: aiResult.lastInsertRowid,
+        sender: 'them' as const,
+        text: aiResponse,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        replyToId: result.lastInsertRowid,
+        replyText: text.trim(),
+      }'''
 
-    const history = chatMessages.reverse().map(m => ({
-      role: m.senderName === 'Opus' ? 'assistant' : 'user' as string,
-      content: m.text
-    }))
-
-    const aiMessages = [
-      { role: 'system', content: 'Ты — Opus, AI-ассистент в мессенджере. Отвечай кратко, по делу и дружелюбно.' },
-      ...history,
-    ]
-
-    const aiResponse = await callAI(aiMessages)
-
-    const opusUser = db.prepare('SELECT id FROM users WHERE email = ?').get('opus@ai.local') as { id: number } | undefined
-    const opusUserId = opusUser?.id
-
-    if (opusUserId) {
-      const aiResult = db.prepare(
-        'INSERT INTO messages (chat_id, sender_id, text, reply_to_id) VALUES (?, ?, ?, ?)'
-      ).run(id, opusUserId, aiResponse, result.lastInsertRowid)
-
-      const aiMsg = {
+new_ai_msg = '''      const aiMsg = {
         id: aiResult.lastInsertRowid,
         sender: 'them' as const,
         text: aiResponse,
@@ -370,61 +384,30 @@ router.post('/:id/messages', async (req: AuthRequest, res: Response) => {
         senderName: 'Opus',
         replyToId: result.lastInsertRowid,
         replyText: text.trim(),
-      }
+      }'''
 
-      res.status(201).json({ messages: [userMsg, aiMsg] })
-      return
-    }
-  } catch (e) {
-    console.error('AI error:', e)
-  }
+if old_ai_msg not in content:
+    print('ERROR: aiMsg block not found')
+    exit(1)
+content = content.replace(old_ai_msg, new_ai_msg)
 
-  res.status(201).json(userMsg)
-})
+# 6. Update other-user endpoint for groups
+old_other_user = '''router.get('/:id/other-user', (req: AuthRequest, res: Response) => {
+  const { id } = req.params
 
-router.delete('/:id/messages/:messageId', (req: AuthRequest, res: Response) => {
-  const { id, messageId } = req.params
-  const { forBoth } = req.body || {}
+  const user = db.prepare(`
+    SELECT u.id, u.name, u.surname, u.email, u.username, u.phone, u.bio, u.privacy, u.last_seen, u.avatar
+    FROM users u
+    JOIN chat_participants cp ON cp.user_id = u.id
+    WHERE cp.chat_id = ? AND u.id != ?
+  `).get(id, req.userId) as any
 
-  const participant = db.prepare(
-    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
-  ).get(id, req.userId)
-
-  if (!participant) {
-    res.status(403).json({ error: 'Not a participant' })
+  if (!user) {
+    res.status(404).json({ error: 'User not found' })
     return
-  }
+  }'''
 
-  const message = db.prepare(
-    'SELECT id, chat_id as chatId, sender_id as senderId FROM messages WHERE id = ? AND chat_id = ?'
-  ).get(messageId, id) as { id: number; chatId: number; senderId: number } | undefined
-
-  if (!message) {
-    res.status(404).json({ error: 'Message not found' })
-    return
-  }
-
-  if (forBoth) {
-    if (message.senderId !== req.userId) {
-      res.status(403).json({ error: 'Only sender can delete for everyone' })
-      return
-    }
-    db.prepare('DELETE FROM messages WHERE id = ?').run(messageId)
-    res.json({ success: true, mode: 'everyone' })
-    return
-  }
-
-  db.prepare(`
-    INSERT INTO deleted_messages (message_id, user_id)
-    VALUES (?, ?)
-    ON CONFLICT(message_id, user_id) DO NOTHING
-  `).run(messageId, req.userId)
-
-  res.json({ success: true, mode: 'me' })
-})
-
-
-router.get('/:id/other-user', (req: AuthRequest, res: Response) => {
+new_other_user = '''router.get('/:id/other-user', (req: AuthRequest, res: Response) => {
   const { id } = req.params
 
   const chat = db.prepare('SELECT is_group FROM chats WHERE id = ?').get(id) as any
@@ -443,33 +426,16 @@ router.get('/:id/other-user', (req: AuthRequest, res: Response) => {
   if (!user) {
     res.status(404).json({ error: 'User not found' })
     return
-  }
+  }'''
 
-  const privacy = JSON.parse(user.privacy || '{"phone":"Everyone","email":"Everyone","bio":"Everyone","profilePhoto":"Everyone","lastSeen":"Everyone"}')
+if old_other_user not in content:
+    print('ERROR: other-user block not found')
+    exit(1)
+content = content.replace(old_other_user, new_other_user)
 
-  const canShow = (setting: string) => {
-    if (setting === 'Everyone') return true
-    if (setting === 'Nobody') return false
-    return true
-  }
-
-  if (!canShow(privacy.email)) delete user.email
-  if (!canShow(privacy.phone)) delete user.phone
-  if (!canShow(privacy.bio)) delete user.bio
-  if (!canShow(privacy.profilePhoto)) delete user.avatar
-  delete user.privacy
-
-  const lastSeenVal = user.last_seen
-  delete user.last_seen
-
-  const online = lastSeenVal ? (Date.now() - new Date(lastSeenVal + 'Z').getTime() < 30000) : false
-  const showLastSeen = privacy.lastSeen !== 'Nobody'
-  res.json({ ...user, online: showLastSeen ? online : false, lastSeen: showLastSeen ? lastSeenVal : null })
-})
-
-router.delete('/:id/messages', (req: AuthRequest, res: Response) => {
+# 7. Update DELETE /:id to only allow creator/admin for groups
+old_delete_chat = '''router.delete('/:id', (req: AuthRequest, res: Response) => {
   const { id } = req.params
-  const { forBoth } = req.body
 
   const participant = db.prepare(
     'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
@@ -480,21 +446,14 @@ router.delete('/:id/messages', (req: AuthRequest, res: Response) => {
     return
   }
 
-  if (forBoth) {
-    db.prepare('DELETE FROM messages WHERE chat_id = ?').run(id)
-    db.prepare('DELETE FROM cleared_chats WHERE chat_id = ?').run(id)
-  } else {
-    db.prepare(`
-      INSERT INTO cleared_chats (chat_id, user_id, cleared_at)
-      VALUES (?, ?, datetime('now'))
-      ON CONFLICT(chat_id, user_id) DO UPDATE SET cleared_at = datetime('now')
-    `).run(id, req.userId)
-  }
+  db.prepare('DELETE FROM messages WHERE chat_id = ?').run(id)
+  db.prepare('DELETE FROM chat_participants WHERE chat_id = ?').run(id)
+  db.prepare('DELETE FROM chats WHERE id = ?').run(id)
 
   res.json({ success: true })
-})
+})'''
 
-router.delete('/:id', (req: AuthRequest, res: Response) => {
+new_delete_chat = '''router.delete('/:id', (req: AuthRequest, res: Response) => {
   const { id } = req.params
 
   const participant = db.prepare(
@@ -517,26 +476,15 @@ router.delete('/:id', (req: AuthRequest, res: Response) => {
   db.prepare('DELETE FROM chats WHERE id = ?').run(id)
 
   res.json({ success: true })
-})
+})'''
 
-router.put('/:id/pin', (req: AuthRequest, res: Response) => {
-  const { id } = req.params
-  const { pinned } = req.body
+if old_delete_chat not in content:
+    print('ERROR: DELETE chat block not found')
+    exit(1)
+content = content.replace(old_delete_chat, new_delete_chat)
 
-  const participant = db.prepare(
-    'SELECT 1 FROM chat_participants WHERE chat_id = ? AND user_id = ?'
-  ).get(id, req.userId)
-
-  if (!participant) {
-    res.status(403).json({ error: 'Not a participant' })
-    return
-  }
-
-  db.prepare('UPDATE chat_participants SET pinned = ? WHERE chat_id = ? AND user_id = ?').run(pinned ? 1 : 0, id, req.userId)
-  res.json({ success: true, pinned: !!pinned })
-})
-
-
+# Add new endpoints before export
+new_endpoints = '''
 router.post('/group', (req: AuthRequest, res: Response) => {
   const { name, participantIds } = req.body
   if (!name?.trim() || !Array.isArray(participantIds) || participantIds.length === 0) {
@@ -553,7 +501,7 @@ router.post('/group', (req: AuthRequest, res: Response) => {
     insertParticipant.run(chatId, userId, userId === req.userId ? 'admin' : 'member')
   })
 
-  res.status(201).json({ id: chatId, name: name.trim(), isGroup: true, participantCount: uniqueIds.length, role: 'admin', lastMessage: '', time: '' })
+  res.status(201).json({ id: chatId, name: name.trim(), isGroup: true, participantCount: uniqueIds.length, lastMessage: '', time: '' })
 })
 
 router.get('/:id/participants', (req: AuthRequest, res: Response) => {
@@ -695,4 +643,15 @@ router.put('/:id', (req: AuthRequest, res: Response) => {
   res.json({ success: true, name: name.trim() })
 })
 
-export default router
+'''
+
+export_marker = 'export default router'
+if export_marker not in content:
+    print('ERROR: export default router not found')
+    exit(1)
+content = content.replace(export_marker, new_endpoints + export_marker)
+
+with open('server/src/routes/chats.ts', 'w', encoding='utf-8') as f:
+    f.write(content)
+
+print('OK')

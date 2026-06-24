@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Search, ArrowUp, User, Users, Copy, Trash2, Image, File, Camera, Settings, LogOut, Shield, Pencil, MoreVertical, Pin, Folder, X, Reply, ChevronDown, BarChart3, Cloud, BadgeCheck, ChevronRight, CheckCircle, Check } from 'lucide-react'
+import { Plus, Search, ArrowUp, User, Users, Copy, Trash2, Image, File, Camera, Settings, LogOut, Shield, Pencil, MoreVertical, Pin, Folder, X, Reply, ChevronDown, BarChart3, Cloud, BadgeCheck, ChevronRight, CheckCircle, Check, Loader2, AlertCircle } from 'lucide-react'
 import { t, langName, p } from './i18n'
 import * as e2e from './crypto'
 import Offer from './pages/Offer'
@@ -14,6 +14,22 @@ interface Chat {
   time: string
   pinned?: boolean
   participantId?: number
+  participantAvatar?: string
+  participantOnline?: boolean
+  participantLastSeen?: string | null
+  isGroup?: boolean
+  participantCount?: number
+  avatar?: string
+  role?: 'admin' | 'member'
+}
+
+interface GroupParticipant {
+  id: number
+  name: string
+  surname?: string
+  username?: string
+  avatar?: string
+  role?: 'admin' | 'member'
 }
 
 interface Folder {
@@ -59,7 +75,9 @@ interface Message {
   time: string
   createdAt?: string
   status?: 'sent' | 'delivered' | 'read'
+  senderId?: number
   senderName?: string
+  senderAvatar?: string
   replyToId?: number
   replyText?: string
   replyAttachmentUrl?: string
@@ -170,6 +188,17 @@ function api(path: string, options?: RequestInit) {
   }))
 }
 
+function formatLastSeen(lastSeen: string | null | undefined, online: boolean | null | undefined, lang: string): string {
+  if (online) return t('online', lang)
+  if (!lastSeen) return ''
+  const diff = Date.now() - new Date(lastSeen + 'Z').getTime()
+  if (diff < 60000) return t('lastSeenFormat', lang).replace('%s', '1 min')
+  if (diff < 3600000) return t('lastSeenFormat', lang).replace('%s', `${Math.floor(diff / 60000)} min`)
+  if (diff < 86400000) return t('lastSeenFormat', lang).replace('%s', `${Math.floor(diff / 3600000)} h`)
+  const d = new Date(lastSeen + 'Z')
+  return t('lastSeenFormat', lang).replace('%s', `${d.getDate().toString().padStart(2, '0')}.${(d.getMonth() + 1).toString().padStart(2, '0')}.${d.getFullYear()}`)
+}
+
 function MessageStatusIcon({ status }: { status?: 'sent' | 'delivered' | 'read' }) {
   if (!status) return null
 
@@ -192,7 +221,7 @@ function App() {
   const [authForm, setAuthForm] = useState({ name: '', surname: '', email: '', password: '' })
   const [isLoggedIn, setIsLoggedIn] = useState(!!token)
 
-  const [activeTab, setActiveTab] = useState<'home' | 'search' | 'chat' | 'profile' | 'settings' | 'edit-profile'>('home')
+  const [activeTab, setActiveTab] = useState<'home' | 'search' | 'chat' | 'profile' | 'settings' | 'edit-profile' | 'group'>('home')
   const [activeChatId, setActiveChatId] = useState<number | null>(null)
   const [chats, setChats] = useState<Chat[]>([])
   const [messages, setMessages] = useState<Message[]>([])
@@ -201,6 +230,7 @@ function App() {
 
   const [inputText, setInputText] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
+  const [opusMessagesLoading, setOpusMessagesLoading] = useState(false)
   const [aiConversation, setAiConversation] = useState<{ role: 'user' | 'ai'; text: string; time?: string }[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<UserData[]>([])
@@ -218,7 +248,11 @@ function App() {
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(null)
   const [settingDropdown, setSettingDropdown] = useState<{ key: string; x: number; y: number } | null>(null)
   const [chatMenu, setChatMenu] = useState<{ x: number; y: number } | null>(null)
+  const [memberMenu, setMemberMenu] = useState<{ participantId: number; x: number; y: number } | null>(null)
+  const [addMemberDialogOpen, setAddMemberDialogOpen] = useState(false)
+  const groupInfoAddInputRef = useRef<HTMLInputElement>(null)
   const [clearChatSubmenu, setClearChatSubmenu] = useState(false)
+  const [deleteMessageSubmenu, setDeleteMessageSubmenu] = useState(false)
   const [settingsSection, setSettingsSection] = useState<'general' | 'account' | 'privacy'>('general')
   const [editProfile, setEditProfile] = useState({ username: '', phone: '', bio: '' })
   const [proOpen, setProOpen] = useState(false)
@@ -226,6 +260,61 @@ function App() {
   const [proPlans, setProPlans] = useState<Plan[]>([])
   const [proStatus, setProStatus] = useState<ProStatus | null>(null)
   const [upgradeLoading, setUpgradeLoading] = useState(false)
+  const [paymentError, setPaymentError] = useState<string | null>(null)
+  const [paymentErrorClosing, setPaymentErrorClosing] = useState(false)
+  const closePaymentError = () => {
+    setPaymentErrorClosing(true)
+    setTimeout(() => {
+      setPaymentError(null)
+      setPaymentErrorClosing(false)
+    }, 220)
+  }
+  const closeCreateGroup = useCallback(() => {
+    setCreateGroupClosing(true)
+    setTimeout(() => {
+      setCreateGroupOpen(false)
+      setCreateGroupClosing(false)
+    }, 220)
+  }, [])
+  const closeDeleteFolderConfirm = useCallback(() => {
+    setDeleteFolderConfirmClosing(true)
+    setTimeout(() => {
+      setDeleteFolderConfirm(null)
+      setDeleteFolderConfirmClosing(false)
+    }, 220)
+  }, [])
+  const closeRenameFolder = useCallback(() => {
+    setRenameFolderClosing(true)
+    setTimeout(() => {
+      setRenameFolderId(null)
+      setRenameFolderInput('')
+      setRenameFolderClosing(false)
+    }, 220)
+  }, [])
+  const submitRenameFolder = () => {
+    const folderId = renameFolderId
+    const name = renameFolderInput.trim()
+    if (!folderId || !name) return
+    api(`/folders/${folderId}`, { method: 'PUT', body: JSON.stringify({ name }) }).then(() => {
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name } : f))
+      closeRenameFolder()
+      setFolderContextMenu(null)
+    }).catch(err => alert(err.message))
+  }
+  const closeNewFolder = useCallback(() => {
+    setNewFolderClosing(true)
+    setTimeout(() => {
+      setNewFolderOpen(false)
+      setNewFolderInput('')
+      setNewFolderClosing(false)
+    }, 220)
+  }, [])
+  const submitNewFolder = () => {
+    const name = newFolderInput.trim()
+    if (!name) return
+    createFolder(name)
+    closeNewFolder()
+  }
   const [pageStack, setPageStack] = useState<string[]>(() => {
     const p = window.location.pathname
     if (p === '/offer') return ['offer']
@@ -247,17 +336,41 @@ function App() {
   const [newChatCtxMenu, setNewChatCtxMenu] = useState<{ x: number; y: number } | null>(null)
   const [folderEditOpen, setFolderEditOpen] = useState(false)
   const [folderEditInput, setFolderEditInput] = useState('')
-  const [expandedFolderId, setExpandedFolderId] = useState<number | null>(null)
+  const [deleteFolderConfirm, setDeleteFolderConfirm] = useState<number | null>(null)
+  const [deleteFolderConfirmClosing, setDeleteFolderConfirmClosing] = useState(false)
+  const [renameFolderId, setRenameFolderId] = useState<number | null>(null)
+  const [renameFolderInput, setRenameFolderInput] = useState('')
+  const [renameFolderClosing, setRenameFolderClosing] = useState(false)
+  const [newFolderOpen, setNewFolderOpen] = useState(false)
+  const [newFolderInput, setNewFolderInput] = useState('')
+  const [newFolderClosing, setNewFolderClosing] = useState(false)
+  const [efSelectedFolderId, setEfSelectedFolderId] = useState<number | null>(null)
+  const [efRenamingId, setEfRenamingId] = useState<number | null>(null)
+  const [efRenamingInput, setEfRenamingInput] = useState('')
+  const [efAddOpen, setEfAddOpen] = useState(false)
+  const [efAddQuery, setEfAddQuery] = useState('')
+  const [efChatQuery, setEfChatQuery] = useState('')
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null)
   const [avatarOpen, setAvatarOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [toastClosing, setToastClosing] = useState(false)
   const typingHeartbeatRef = useRef<Record<number, number>>({})
+  const typingStopTimeoutRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
 
   const [pollModalOpen, setPollModalOpen] = useState(false)
   const [pollQuestion, setPollQuestion] = useState('')
   const [pollOptions, setPollOptions] = useState<string[]>(['', ''])
   const [pollsCache, setPollsCache] = useState<Record<number, Poll>>({})
+
+  const [createGroupOpen, setCreateGroupOpen] = useState(false)
+  const [createGroupClosing, setCreateGroupClosing] = useState(false)
+  const [createGroupName, setCreateGroupName] = useState('')
+  const [createGroupSelected, setCreateGroupSelected] = useState<number[]>([])
+  const [groupParticipants, setGroupParticipants] = useState<GroupParticipant[]>([])
+  const [groupInfoAddQuery, setGroupInfoAddQuery] = useState('')
+  const [groupInfoAddResults, setGroupInfoAddResults] = useState<UserData[]>([])
+  const [groupAvatarUploading, setGroupAvatarUploading] = useState(false)
+
   const profileAvatarRef = useRef<HTMLDivElement>(null)
   const avatarCloneRef = useRef<{ clone: HTMLElement; original: HTMLElement; overlay: HTMLDivElement } | null>(null)
   const [settings, setSettings] = useState(loadSettings)
@@ -277,6 +390,8 @@ function App() {
             phonePrivacy: u.privacy.phone || 'Everyone',
             emailPrivacy: u.privacy.email || 'Everyone',
             bioPrivacy: u.privacy.bio || 'Everyone',
+            profilePhoto: u.privacy.profilePhoto || 'Everyone',
+            lastSeen: u.privacy.lastSeen || 'Everyone',
           }))
         }
       }).catch(() => {
@@ -306,6 +421,15 @@ function App() {
   }, [isLoggedIn])
 
   useEffect(() => {
+    if (!isLoggedIn) return
+    api('/users/ping', { method: 'POST' }).catch(() => {})
+    const pingInterval = window.setInterval(() => {
+      api('/users/ping', { method: 'POST' }).catch(() => {})
+    }, 30000)
+    return () => window.clearInterval(pingInterval)
+  }, [isLoggedIn])
+
+  useEffect(() => {
     if (proOpen) {
       api('/subscription/plans').then(data => setProPlans(data.plans || [])).catch(() => {})
     }
@@ -322,9 +446,21 @@ function App() {
       return
     }
 
+    let typingStableAt = 0
+
     const pollTyping = () => {
       api(`/chats/${activeChatId}/typing`).then((res: { typing: boolean }) => {
-        setIsPeerTyping(!!res.typing)
+        const isTyping = !!res.typing
+        if (isTyping) {
+          if (!typingStableAt) typingStableAt = Date.now()
+          else if (Date.now() - typingStableAt > 15000) {
+            setIsPeerTyping(false)
+            return
+          }
+        } else {
+          typingStableAt = 0
+        }
+        setIsPeerTyping(isTyping)
       }).catch(() => setIsPeerTyping(false))
     }
 
@@ -335,33 +471,53 @@ function App() {
 
   useEffect(() => {
     if (activeChatId) {
-      api(`/chats/${activeChatId}/messages`).then(async (msgs: Message[]) => {
-        const chat = chats.find(c => c.id === activeChatId)
-        if (chat?.participantId && chat.name !== 'Opus') {
-          const key = await e2e.getSharedKey(chat.participantId, localStorage.getItem('token')!)
-          if (key) {
-            msgs = await Promise.all(msgs.map(async m => ({
-              ...m,
-              text: await e2e.decrypt(key, m.text)
-            })))
+      const chat = chats.find(c => c.id === activeChatId)
+      const fetchMessages = () => {
+        api(`/chats/${activeChatId}/messages`).then(async (msgs: Message[]) => {
+          if (chat?.participantId && !chat.isGroup && chat.name !== 'Opus') {
+            const key = await e2e.getSharedKey(chat.participantId, localStorage.getItem('token')!)
+            if (key) {
+              msgs = await Promise.all(msgs.map(async m => ({
+                ...m,
+                text: await e2e.decrypt(key, m.text)
+              })))
+            }
           }
-        }
-        setMessages(msgs)
-        if (chat?.name !== 'Opus') {
-          api(`/chats/${activeChatId}/read`, { method: 'POST' }).then(() => {
-            setMessages(prev => prev.map(m => m.sender === 'them' ? { ...m, status: 'read' } : m))
-          }).catch(() => {})
-        }
-      })
-      api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
+          setMessages(prev => {
+            if (prev.length === msgs.length && prev.every((m, i) => m.id === msgs[i].id)) return prev
+            const hasNewThem = msgs.some(m => m.sender === 'them' && !prev.some(p => p.id === m.id))
+            if (hasNewThem) setIsPeerTyping(false)
+            return msgs
+          })
+          if (chat && !chat.isGroup && chat.name !== 'Opus') {
+            api(`/chats/${activeChatId}/read`, { method: 'POST' }).then(() => {
+              setMessages(prev => prev.map(m => m.sender === 'them' ? { ...m, status: 'read' } : m))
+            }).catch(() => {})
+          }
+        })
+      }
+
+      fetchMessages()
+      if (chat?.isGroup) {
+        api(`/chats/${activeChatId}/participants`).then(setGroupParticipants).catch(() => setGroupParticipants([]))
+        setContactProfile(null)
+      } else {
+        api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
+      }
       api(`/polls/chat/${activeChatId}`).then((polls: Poll[]) => {
         const cacheUpdate: Record<number, Poll> = {}
         polls.forEach(p => { cacheUpdate[p.id] = p })
         setPollsCache(prev => ({ ...prev, ...cacheUpdate }))
       }).catch(() => {})
+
+      const pollInterval = window.setInterval(fetchMessages, 3000)
+      return () => {
+        window.clearInterval(pollInterval)
+      }
     }
     setMentionMenu(null)
     setViewedUser(null)
+    setGroupParticipants([])
   }, [activeChatId, chats])
 
   const opusLoadedRef = useRef(false)
@@ -370,6 +526,7 @@ function App() {
       opusLoadedRef.current = true
       const opusChatId = chats.find(c => c.name === 'Opus')?.id
       if (opusChatId) {
+        setOpusMessagesLoading(true)
         api(`/chats/${opusChatId}/messages`).then((msgs: any[]) => {
           setAiConversation(msgs.map(m => ({
             role: (m.sender === 'me' ? 'user' : 'ai') as 'user' | 'ai',
@@ -377,7 +534,7 @@ function App() {
             time: m.time
           })))
           initialMsgCount.current = msgs.length
-        }).catch(() => {})
+        }).catch(() => {}).finally(() => setOpusMessagesLoading(false))
       }
     }
     if (activeTab !== 'home') {
@@ -433,7 +590,7 @@ function App() {
     const atts = pendingAttachments
     const chat = chats.find(c => c.id === chatId)
     let finalText = text
-    const e2eKey = chat?.participantId && chat.name !== 'Opus'
+    const e2eKey = chat?.participantId && !chat.isGroup && chat.name !== 'Opus'
       ? await e2e.getSharedKey(chat.participantId, localStorage.getItem('token')!)
       : null
     if (finalText && e2eKey) finalText = await e2e.encrypt(e2eKey, finalText)
@@ -460,6 +617,11 @@ function App() {
         setMessages(prev => [...prev, msg])
       }
       playSentMessageSound()
+      if (typingStopTimeoutRef.current[chatId]) {
+        clearTimeout(typingStopTimeoutRef.current[chatId])
+        delete typingStopTimeoutRef.current[chatId]
+      }
+      sendTypingFalse(chatId)
       setChatInputTexts(prev => ({ ...prev, [chatId]: '' }))
       setReplyTo(null)
       setPendingAttachments([])
@@ -502,7 +664,17 @@ function App() {
         userVote: null,
       }
       setPollsCache(prev => ({ ...prev, [newPoll.id]: newPoll }))
-      api(`/chats/${activeChatId}/messages`).then((msgs: any[]) => {
+      api(`/chats/${activeChatId}/messages`).then(async (msgs: any[]) => {
+        const chat = chats.find(c => c.id === activeChatId)
+        if (chat?.participantId && !chat.isGroup && chat.name !== 'Opus') {
+          const key = await e2e.getSharedKey(chat.participantId, localStorage.getItem('token')!)
+          if (key) {
+            msgs = await Promise.all(msgs.map(async m => ({
+              ...m,
+              text: await e2e.decrypt(key, m.text)
+            })))
+          }
+        }
         setMessages(msgs)
         const lastMsg = msgs[msgs.length - 1]
         if (lastMsg) {
@@ -538,19 +710,33 @@ function App() {
     }).catch(err => alert(err.message))
   }
 
+  const sendTypingFalse = (chatId: number) => {
+    delete typingHeartbeatRef.current[chatId]
+    api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: false }) }).catch(() => {})
+  }
+
   const handleChatInputChange = (chatId: number, value: string) => {
     setChatInputTexts(prev => ({ ...prev, [chatId]: value }))
     const chat = chats.find(c => c.id === chatId)
     if (chat?.participantId && chat.name !== 'Opus') {
       const now = Date.now()
       const hasText = value.trim().length > 0
-      if (hasText && (!typingHeartbeatRef.current[chatId] || now - typingHeartbeatRef.current[chatId] > 2000)) {
-        typingHeartbeatRef.current[chatId] = now
-        api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: true }) }).catch(() => {})
+      if (hasText) {
+        if (!typingHeartbeatRef.current[chatId] || now - typingHeartbeatRef.current[chatId] > 2000) {
+          typingHeartbeatRef.current[chatId] = now
+          api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: true }) }).catch(() => {})
+        }
+        if (typingStopTimeoutRef.current[chatId]) {
+          clearTimeout(typingStopTimeoutRef.current[chatId])
+        }
+        typingStopTimeoutRef.current[chatId] = setTimeout(() => sendTypingFalse(chatId), 3000)
       }
       if (!hasText) {
-        delete typingHeartbeatRef.current[chatId]
-        api(`/chats/${chatId}/typing`, { method: 'POST', body: JSON.stringify({ typing: false }) }).catch(() => {})
+        if (typingStopTimeoutRef.current[chatId]) {
+          clearTimeout(typingStopTimeoutRef.current[chatId])
+          delete typingStopTimeoutRef.current[chatId]
+        }
+        sendTypingFalse(chatId)
       }
     }
     const input = chatInputRefs.current[chatId]
@@ -617,6 +803,85 @@ function App() {
       closeChatMenu()
     }).catch(() => {})
   }
+
+  const handleCreateGroup = () => {
+    const name = createGroupName.trim()
+    if (!name || createGroupSelected.length === 0) return
+    api('/chats/group', {
+      method: 'POST',
+      body: JSON.stringify({ name, participantIds: createGroupSelected })
+    }).then((newChat: Chat) => {
+      setChats(prev => [newChat, ...prev])
+      setActiveChatId(newChat.id)
+      setActiveTab('chat')
+      closeCreateGroup()
+      setCreateGroupName('')
+      setCreateGroupSelected([])
+    }).catch(err => alert(err.message))
+  }
+
+  const handleAddGroupMember = (userId: number) => {
+    if (!activeChatId) return
+    api(`/chats/${activeChatId}/participants`, {
+      method: 'POST',
+      body: JSON.stringify({ userId })
+    }).then(() => {
+      api(`/chats/${activeChatId}/participants`).then(setGroupParticipants).catch(() => setGroupParticipants([]))
+      setGroupInfoAddQuery('')
+      setGroupInfoAddResults([])
+      setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, participantCount: (c.participantCount || 0) + 1 } : c))
+    }).catch(err => alert(err.message))
+  }
+
+  const handleRemoveGroupMember = (userId: number) => {
+    if (!activeChatId) return
+    api(`/chats/${activeChatId}/participants/${userId}`, { method: 'DELETE' }).then(() => {
+      api(`/chats/${activeChatId}/participants`).then(setGroupParticipants).catch(() => setGroupParticipants([]))
+      setGroupParticipants(prev => prev.filter(p => p.id !== userId))
+      setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, participantCount: Math.max(1, (c.participantCount || 1) - 1) } : c))
+    }).catch(err => alert(err.message))
+  }
+
+  const handleLeaveGroup = () => {
+    if (!activeChatId || !user) return
+    api(`/chats/${activeChatId}/participants/${user.id}`, { method: 'DELETE' }).then(() => {
+      setChats(prev => prev.filter(c => c.id !== activeChatId))
+      setActiveChatId(null)
+      setActiveTab('home')
+      setMessages([])
+    }).catch(err => alert(err.message))
+  }
+
+  const handleGroupAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>, chatId: number) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const formData = new FormData()
+    formData.append('avatar', file)
+    formData.append('chatId', String(chatId))
+    setGroupAvatarUploading(true)
+    try {
+      const res = await api('/upload/group-avatar', { method: 'POST', body: formData })
+      setChats(prev => prev.map(c => c.id === chatId ? { ...c, avatar: res.avatar } : c))
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Failed to upload avatar')
+    } finally {
+      setGroupAvatarUploading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!activeChatId || !groupInfoAddQuery.trim()) {
+      setGroupInfoAddResults([])
+      return
+    }
+    const t = setTimeout(() => {
+      api(`/users/search?q=${encodeURIComponent(groupInfoAddQuery)}`).then((results: UserData[]) => {
+        const existingIds = new Set(groupParticipants.map(p => p.id))
+        setGroupInfoAddResults(results.filter(r => !existingIds.has(r.id)))
+      }).catch(() => setGroupInfoAddResults([]))
+    }, 300)
+    return () => clearTimeout(t)
+  }, [groupInfoAddQuery, groupParticipants, activeChatId])
 
   const openChatWithUser = (username: string) => {
     if (username.toLowerCase() === 'opus') {
@@ -755,7 +1020,10 @@ function App() {
     setContextMenu({ x: e.clientX, y: e.clientY, messageId })
   }
 
-  const closeContextMenu = () => setContextMenu(null)
+  const closeContextMenu = () => {
+    setContextMenu(null)
+    setDeleteMessageSubmenu(false)
+  }
 
   const copyMessage = () => {
     if (!contextMenu) return
@@ -788,10 +1056,16 @@ function App() {
     closeContextMenu()
   }
 
-  const deleteMessage = () => {
-    if (!contextMenu) return
-    setMessages(prev => prev.filter(m => m.id !== contextMenu.messageId))
-    closeContextMenu()
+  const deleteMessage = (forBoth: boolean) => {
+    if (!contextMenu || !activeChatId) return
+    api(`/chats/${activeChatId}/messages/${contextMenu.messageId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ forBoth })
+    }).then(() => {
+      setMessages(prev => prev.filter(m => m.id !== contextMenu.messageId))
+      setDeleteMessageSubmenu(false)
+      closeContextMenu()
+    }).catch(err => alert(err.message))
   }
 
   const deleteChat = () => {
@@ -828,28 +1102,51 @@ function App() {
 
   const renameFolder = (folderId: number) => {
     const folder = folders.find(f => f.id === folderId)
-    const name = prompt(t('renameFolderPrompt', settings.language), folder?.name || '')
-    if (!name?.trim()) return
-    api(`/folders/${folderId}`, { method: 'PUT', body: JSON.stringify({ name: name.trim() }) }).then(() => {
-      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name: name.trim() } : f))
-      setFolderContextMenu(null)
-    }).catch(err => alert(err.message))
+    setRenameFolderInput(folder?.name || '')
+    setRenameFolderId(folderId)
+    setFolderContextMenu(null)
   }
 
   const deleteFolder = (folderId: number) => {
-    if (!confirm(t('deleteFolderConfirm', settings.language))) return
+    setDeleteFolderConfirm(folderId)
+    setFolderContextMenu(null)
+  }
+
+  const confirmDeleteFolder = () => {
+    const folderId = deleteFolderConfirm
+    if (!folderId) return
     api(`/folders/${folderId}`, { method: 'DELETE' }).then(() => {
       setFolders(prev => prev.filter(f => f.id !== folderId))
       if (activeFolderId === folderId) setActiveFolderId(null)
-      setFolderContextMenu(null)
+      if (efSelectedFolderId === folderId) setEfSelectedFolderId(null)
+      closeDeleteFolderConfirm()
     }).catch(err => alert(err.message))
   }
+
+  const startEfRename = (folderId: number) => {
+    const folder = folders.find(f => f.id === folderId)
+    setEfRenamingInput(folder?.name || '')
+    setEfRenamingId(folderId)
+  }
+
+  const submitEfRename = () => {
+    const folderId = efRenamingId
+    const name = efRenamingInput.trim()
+    if (!folderId || !name) { setEfRenamingId(null); return }
+    api(`/folders/${folderId}`, { method: 'PUT', body: JSON.stringify({ name }) }).then(() => {
+      setFolders(prev => prev.map(f => f.id === folderId ? { ...f, name } : f))
+      setEfRenamingId(null)
+    }).catch(err => alert(err.message))
+  }
+
+  const cancelEfRename = () => setEfRenamingId(null)
 
   const closeAttachMenu = () => setAttachMenu(null)
   const closeProfileMenu = () => setProfileMenu(null)
   const closeChatContextMenu = () => setChatContextMenu(null)
   const closeFolderDropdown = () => setFolderDropdown(null)
   const closeChatMenu = () => setChatMenu(null)
+  const closeMemberMenu = () => setMemberMenu(null)
   const closeFolderContextMenu = () => setFolderContextMenu(null)
   const closeNewChatCtxMenu = () => setNewChatCtxMenu(null)
 
@@ -885,13 +1182,15 @@ function App() {
   const selectSetting = (key: string, value: string) => {
     setSettings(prev => {
       const next = { ...prev, [key as keyof typeof prev]: value }
-      if (key === 'phonePrivacy' || key === 'emailPrivacy' || key === 'bioPrivacy') {
+      if (key === 'phonePrivacy' || key === 'emailPrivacy' || key === 'bioPrivacy' || key === 'profilePhoto' || key === 'lastSeen') {
         api('/users/me/privacy', {
           method: 'PUT',
           body: JSON.stringify({
             phone: next.phonePrivacy,
             email: next.emailPrivacy,
             bio: next.bioPrivacy,
+            profilePhoto: next.profilePhoto,
+            lastSeen: next.lastSeen,
           })
         }).catch(console.error)
       }
@@ -901,9 +1200,9 @@ function App() {
   }
 
   useEffect(() => {
-    const handleClick = () => { closeContextMenu(); closeAiContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeNewChatCtxMenu(); closeSettingDropdown(); closeChatMenu(); setClearChatSubmenu(false); setFolderEditOpen(false); setPollModalOpen(false) }
-    const handleScroll = () => { closeContextMenu(); closeAiContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeNewChatCtxMenu(); closeSettingDropdown(); closeChatMenu(); setClearChatSubmenu(false); setFolderEditOpen(false); setPollModalOpen(false) }
-    if (contextMenu || aiContextMenu || attachMenu || profileMenu || chatContextMenu || folderDropdown || folderContextMenu || newChatCtxMenu || folderEditOpen || settingDropdown || chatMenu || clearChatSubmenu || pollModalOpen) {
+    const handleClick = () => { closeContextMenu(); closeAiContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeNewChatCtxMenu(); closeSettingDropdown(); closeChatMenu(); closeMemberMenu(); setClearChatSubmenu(false); setFolderEditOpen(false); setPollModalOpen(false) }
+    const handleScroll = () => { closeContextMenu(); closeAiContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeNewChatCtxMenu(); closeSettingDropdown(); closeChatMenu(); closeMemberMenu(); setClearChatSubmenu(false); setFolderEditOpen(false); setPollModalOpen(false) }
+    if (contextMenu || aiContextMenu || attachMenu || profileMenu || chatContextMenu || folderDropdown || folderContextMenu || newChatCtxMenu || folderEditOpen || settingDropdown || chatMenu || memberMenu || clearChatSubmenu || pollModalOpen) {
       document.addEventListener('click', handleClick)
       document.addEventListener('scroll', handleScroll, true)
     }
@@ -921,11 +1220,24 @@ function App() {
   }, [fullscreenImage])
 
   useEffect(() => {
+    if (!addMemberDialogOpen) return
+    const t = setTimeout(() => groupInfoAddInputRef.current?.focus(), 100)
+    return () => clearTimeout(t)
+  }, [addMemberDialogOpen])
+
+  useEffect(() => {
     if (!avatarOpen) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeAvatarAnim() }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [avatarOpen, closeAvatarAnim])
+
+  useEffect(() => {
+    if (activeTab !== 'group' && !createGroupOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setActiveTab('chat'); closeCreateGroup() } }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [activeTab, createGroupOpen, closeCreateGroup])
 
   if (!isLoggedIn) {
     return (<>
@@ -1110,11 +1422,14 @@ function App() {
                 }}
                 title={chat.name}
               >
-                <div className="chat-item-avatar"><User size={18} strokeWidth={1.5} /></div>
+                <div className={`chat-item-avatar${chat.isGroup ? ' group-avatar' : ''}`} style={chat.isGroup ? (chat.avatar ? { backgroundImage: `url(${chat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}) : (chat.participantAvatar ? { backgroundImage: `url(${chat.participantAvatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {})}>
+                  {chat.isGroup ? (!chat.avatar && <Users size={18} strokeWidth={1.5} />) : (!chat.participantAvatar && <User size={18} strokeWidth={1.5} />)}
+                  {!chat.isGroup && <span className={`online-dot${chat.participantOnline ? ' online' : ''}`} />}
+                </div>
                 <div className="chat-item-info">
                   <span className="chat-item-name">{chat.name}</span>
                   {settings.previews === 'On' && (
-                    <span className={`chat-item-message${draftPreview ? ' is-draft' : ''}`}>{draftPreview || chat.lastMessage}</span>
+                    <span className={`chat-item-message${draftPreview ? ' is-draft' : ''}`}>{draftPreview || (chat.isGroup ? (chat.lastMessage || `${chat.participantCount || 0} members`) : chat.lastMessage)}</span>
                   )}
                 </div>
                 {chat.pinned && <div className="chat-item-pin" />}
@@ -1201,7 +1516,11 @@ function App() {
 
         {activeTab === 'home' ? (
           <div className={`chat-thread-container ai-chat ${aiConversation.length > 0 ? 'has-messages' : ''} ${firstHomeEntry ? 'home-entry' : ''}`}>
-            {aiConversation.length === 0 ? (
+            {opusMessagesLoading ? (
+              <div className="chat-thread-messages ai-messages-loading">
+                <Loader2 size={32} className="btn-spinner" />
+              </div>
+            ) : aiConversation.length === 0 ? (
               <div className="chat-thread-messages">
                 <div className="ai-welcome">
                   <h1 className="landing-header">{t('letsTextSomeone', settings.language)}</h1>
@@ -1263,13 +1582,18 @@ function App() {
                 {searchResults.length > 0 ? (
                   searchResults.map(u => (
                     <div key={u.id} className="recent-item" onClick={() => {
-                      api('/chats', { method: 'POST', body: JSON.stringify({ name: `${u.name} ${u.surname}`, participantId: u.id }) }).then(newChat => {
-                        setChats(prev => [newChat, ...prev])
+                      api('/chats/find-or-create', { method: 'POST', body: JSON.stringify({ username: u.username }) }).then(newChat => {
+                        setChats(prev => {
+                          if (prev.find(c => c.id === newChat.id)) return prev
+                          return [newChat, ...prev]
+                        })
                         setActiveChatId(newChat.id)
                         setActiveTab('chat')
                       }).catch(err => alert(err.message))
                     }}>
-                      <div className="item-avatar"><User size={18} strokeWidth={1.5} /></div>
+                      <div className="item-avatar" style={u.avatar ? { backgroundImage: `url(${u.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                        {!u.avatar && <User size={18} strokeWidth={1.5} />}
+                      </div>
                       <div className="item-content">
                         <div className="item-name">{u.name} {u.surname}</div>
                         <div className="item-subtext">{u.email}</div>
@@ -1285,15 +1609,23 @@ function App() {
         ) : activeTab === 'chat' && activeChat ? (
           <div className="chat-thread-container">
             <div className="chat-thread-header">
-              <div className="chat-header-left" onClick={() => setActiveTab('profile')} style={{ cursor: 'pointer' }}>
-                <div className="chat-header-avatar">
-                  <User size={20} strokeWidth={1.5} />
-                  <span className="online-dot" />
+              <div className="chat-header-left" onClick={() => activeChat.isGroup ? setActiveTab('group') : setActiveTab('profile')} style={{ cursor: 'pointer' }}>
+                <div className={`chat-header-avatar${activeChat.isGroup ? ' group-avatar' : ''}`} style={activeChat.isGroup ? (activeChat.avatar ? { backgroundImage: `url(${activeChat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}) : ((viewedUser || contactProfile)?.avatar || activeChat?.participantAvatar ? { backgroundImage: `url(${(viewedUser || contactProfile)?.avatar || activeChat?.participantAvatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {})}>
+                  {activeChat.isGroup ? (!activeChat.avatar && <Users size={20} strokeWidth={1.5} />) : (!(viewedUser || contactProfile)?.avatar && !activeChat?.participantAvatar && <User size={20} strokeWidth={1.5} />)}
+                  {!activeChat.isGroup && <span className={`online-dot${contactProfile?.online ? ' online' : ''}`} />}
                 </div>
                 <div className="chat-header-info">
                   <div className="chat-header-name">
                     {activeChat.name}
                   </div>
+                  {activeChat.isGroup ? (
+                    <div className="chat-header-status">{activeChat.participantCount || 0} members</div>
+                  ) : (() => {
+                    const lastSeen = (contactProfile || activeChat)?.lastSeen
+                    const online = contactProfile?.online ?? activeChat?.participantOnline
+                    const text = formatLastSeen(lastSeen, online, settings.language)
+                    return text ? <div className={`chat-header-status${online ? ' online' : ''}`}>{text}</div> : null
+                  })()}
                 </div>
               </div>
               <div className="chat-header-actions">
@@ -1328,6 +1660,9 @@ function App() {
                   <div id={`msg-${msg.id}`} className={`message-row ${msg.sender === 'me' ? 'sender-me' : 'sender-them'}`}
                     onContextMenu={(e) => handleContextMenu(e, msg.id)}>
                     <div className="message-bubble">
+                      {activeChat?.isGroup && msg.sender !== 'me' && msg.senderName && (
+                        <div className="message-sender-name">{msg.senderName}</div>
+                      )}
                       {msg.replyToId && (msg.replyText || msg.replyAttachmentUrl) && (
                         <div className="message-reply" onClick={() => { const el = document.getElementById(`msg-${msg.replyToId}`); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}>
                           <div className="message-reply-line" />
@@ -1394,9 +1729,18 @@ function App() {
 
             {contextMenu && (
               <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(e) => e.stopPropagation()}>
-                <button className="context-menu-item" onClick={replyMessage}><Reply size={14} /><span>{t('reply', settings.language)}</span></button>
-                <button className="context-menu-item" onClick={copyMessage}><Copy size={14} /><span>{t('copy', settings.language)}</span></button>
-                <button className="context-menu-item context-menu-item-danger" onClick={deleteMessage}><Trash2 size={14} /><span>{t('delete', settings.language)}</span></button>
+                {!deleteMessageSubmenu ? (
+                  <>
+                    <button className="context-menu-item" onClick={replyMessage}><Reply size={14} /><span>{t('reply', settings.language)}</span></button>
+                    <button className="context-menu-item" onClick={copyMessage}><Copy size={14} /><span>{t('copy', settings.language)}</span></button>
+                    <button className="context-menu-item context-menu-item-danger" onClick={() => setDeleteMessageSubmenu(true)}><Trash2 size={14} /><span>{t('delete', settings.language)}</span></button>
+                  </>
+                ) : (
+                  <>
+                    <button className="context-menu-item" onClick={() => deleteMessage(false)}><User size={14} /><span>{t('clearForMe', settings.language)}</span></button>
+                    <button className="context-menu-item context-menu-item-danger" onClick={() => deleteMessage(true)}><Users size={14} /><span>{t('clearForEveryone', settings.language)}</span></button>
+                  </>
+                )}
               </div>
             )}
 
@@ -1479,6 +1823,61 @@ function App() {
               </div>
             </div>
           </div>
+        ) : activeTab === 'group' && activeChat ? (
+          <div className="profile-container">
+            <div className="profile-top">
+              <label className="profile-avatar-large group-avatar" style={activeChat.avatar ? { backgroundImage: `url(${activeChat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent', cursor: activeChat.role === 'admin' ? 'pointer' : 'default' } : { cursor: activeChat.role === 'admin' ? 'pointer' : 'default' }}>
+                {!activeChat.avatar && <Users size={36} strokeWidth={1.5} />}
+                {activeChat.role === 'admin' && <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handleGroupAvatarChange(e, activeChat.id)} />}
+                {groupAvatarUploading && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', borderRadius: '50%' }}><Loader2 size={18} className="btn-spinner" /></div>}
+              </label>
+              <div className="profile-info-header">
+                <div className="profile-name">{activeChat.name}</div>
+              </div>
+              {activeChat.role === 'admin' && (
+                <button className="profile-add-btn" onClick={() => { setGroupInfoAddQuery(''); setGroupInfoAddResults([]); setAddMemberDialogOpen(true) }}>
+                  <Plus size={16} />
+                  <span>{t('add', settings.language)}</span>
+                </button>
+              )}
+            </div>
+            <div className="profile-content">
+              <div className="profile-section">
+                <h3 className="profile-section-title">{t('members', settings.language)}</h3>
+                <div className="profile-card">
+                  {groupParticipants.map(p => (
+                    <div key={p.id} className="profile-info-row" style={{ justifyContent: 'flex-start', gap: 10, cursor: p.id === user?.id ? 'default' : 'pointer' }} onClick={() => p.username && p.id !== user?.id && openChatWithUser(p.username)}>
+                      <div className="item-avatar" style={p.avatar ? { backgroundImage: `url(${p.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                        {!p.avatar && <User size={16} strokeWidth={1.5} />}
+                      </div>
+                      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+                        <span style={{ color: '#fff', fontWeight: 500 }}>{p.name} {p.surname}</span>
+                        {p.username && <span style={{ color: '#8c8c88', fontSize: 12 }}>@{p.username}</span>}
+                      </div>
+                      {p.role === 'admin' && <span style={{ fontSize: 11, color: '#3287FE', textTransform: 'capitalize' }}>{t('admin', settings.language)}</span>}
+                      {activeChat.role === 'admin' && p.id !== user?.id && (
+                        <>
+                          <button className="dialog-close" title={t('more', settings.language)} onClick={(e) => {
+                            e.stopPropagation()
+                            if (memberMenu?.participantId === p.id) { closeMemberMenu(); return }
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            setMemberMenu({ participantId: p.id, x: rect.right, y: rect.bottom + 8 })
+                          }}><MoreVertical size={14} /></button>
+                          {memberMenu?.participantId === p.id && (
+                            <div className="context-menu" style={{ right: window.innerWidth - memberMenu.x, top: memberMenu.y }} onClick={(e) => e.stopPropagation()}>
+                              <button className="context-menu-item context-menu-item-danger" onClick={() => { handleRemoveGroupMember(p.id); closeMemberMenu() }}><Trash2 size={14} /><span>{t('removeMember', settings.language)}</span></button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+
+            </div>
+          </div>
         ) : activeTab === 'profile' && activeChatId === null ? (
           <div className="profile-container">
             <div className="profile-top">
@@ -1492,7 +1891,8 @@ function App() {
                 {user?.avatar && <span className="online-dot online-dot-lg online" />}
               </div>
               <div className="profile-info-header">
-                <div className="profile-name">{user?.name || t('user', settings.language)}</div>
+                <div className="profile-name">{user?.name || ''}{user?.surname ? ` ${user.surname}` : ''}</div>
+                {user?.bio && <div className="profile-bio">{user.bio}</div>}
               </div>
             </div>
             <div className="profile-content">
@@ -1589,10 +1989,10 @@ function App() {
               <div className="profile-avatar-large" style={(viewedUser || contactProfile)?.avatar ? { backgroundImage: `url(${(viewedUser || contactProfile)?.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent', cursor: 'pointer' } : {}}
                 onClick={() => (viewedUser || contactProfile)?.avatar && setFullscreenImage((viewedUser || contactProfile)?.avatar!)}>
                 {!(viewedUser || contactProfile)?.avatar && <User size={36} strokeWidth={1.5} />}
-                <span className="online-dot online-dot-lg" />
+                <span className={`online-dot online-dot-lg${(contactProfile || viewedUser)?.online ? ' online' : ''}`} />
               </div>
               <div className="profile-info-header">
-                <div className="profile-name">{(viewedUser || contactProfile) ? `${(viewedUser || contactProfile)!.name} ${(viewedUser || contactProfile)!.surname}` : activeChat?.name}</div>
+                <div className="profile-name">{(viewedUser || contactProfile)?.name ? `${(viewedUser || contactProfile)!.name} ${(viewedUser || contactProfile)!.surname || ''}` : activeChat?.name || ''}</div>
               </div>
               {(viewedUser || contactProfile)?.bio && <div className="profile-bio">{(viewedUser || contactProfile)?.bio}</div>}
             </div>
@@ -1649,7 +2049,7 @@ function App() {
                 <div className="profile-section">
                   <h3 className="profile-section-title">{t('profile', settings.language)}</h3>
                   <div className="profile-card">
-                    <div className="profile-info-row"><span className="profile-info-label">{t('name', settings.language)}</span><span className="profile-info-value">{user?.name || ''}</span></div>
+                    <div className="profile-info-row"><span className="profile-info-label">{t('name', settings.language)}</span><span className="profile-info-value">{user?.name || ''}{user?.surname ? ` ${user.surname}` : ''}</span></div>
                     <div className="profile-info-row"><span className="profile-info-label">{t('email', settings.language)}</span><span className="profile-info-value">{user?.email || ''}</span></div>
                   </div>
                 </div>
@@ -1706,7 +2106,7 @@ function App() {
             {folder.chats.includes(folderDropdown.chatId) && <span style={{ marginLeft: 'auto', color: '#13B962' }}>✓</span>}
           </button>
         ))}
-        <button className="context-menu-item" onClick={() => { const name = prompt(t('folderNamePrompt', settings.language)); if (name) createFolder(name) }}>
+        <button className="context-menu-item" onClick={() => { setNewFolderOpen(true); setFolderDropdown(null) }}>
           <Plus size={14} /><span>{t('newFolder', settings.language)}</span>
         </button>
       </div>
@@ -1725,6 +2125,9 @@ function App() {
 
     {newChatCtxMenu && (
       <div className="context-menu" style={{ left: newChatCtxMenu.x, top: newChatCtxMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <button className="context-menu-item" onClick={() => { setNewChatCtxMenu(null); setCreateGroupOpen(true) }}>
+          <Users size={14} /><span>{t('newGroup', settings.language)}</span>
+        </button>
         <button className="context-menu-item" onClick={() => { setNewChatCtxMenu(null); setFolderEditOpen(true) }}>
           <Folder size={14} /><span>{t('editFolders', settings.language)}</span>
         </button>
@@ -1744,69 +2147,154 @@ function App() {
             <button className="dialog-close" onClick={() => setFolderEditOpen(false)}><X size={16} /></button>
           </div>
 
-          <div className="dialog-ef-list">
-            {folders.map(folder => (
-              <div key={folder.id} className="dialog-ef-card">
-                <div className="dialog-ef-card-header" onClick={() => setExpandedFolderId(expandedFolderId === folder.id ? null : folder.id)}>
-                  <Folder size={16} />
-                  <span className="dialog-ef-card-name">{folder.name}</span>
-                  <span className="dialog-ef-card-count">{folder.chats.length}</span>
-                  <ChevronDown size={14} className={`dialog-ef-card-arrow${expandedFolderId === folder.id ? ' open' : ''}`} />
-                </div>
-
-                {expandedFolderId === folder.id && (
-                  <div className="dialog-ef-card-body">
-                    {folder.chats.length > 0 && (
-                      <div className="dialog-ef-chats">
-                        {chats.filter(c => folder.chats.includes(c.id)).map(chat => (
-                          <div key={chat.id} className="dialog-ef-chat-row">
-                            <User size={13} />
-                            <span className="dialog-ef-chat-name">{chat.name}</span>
-                            <button className="dialog-ef-chat-remove" onClick={() => {
-                              api(`/folders/${folder.id}/chats/${chat.id}`, { method: 'DELETE' }).then(() => {
-                                setFolders(prev => prev.map(f => f.id === folder.id ? { ...f, chats: f.chats.filter(c => c !== chat.id) } : f))
-                              })
-                            }}><X size={13} /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="dialog-ef-add-area">
-                      {chats.filter(c => !folder.chats.includes(c.id) && c.name !== 'Opus').length > 0 ? (
-                        <select className="dialog-ef-select" defaultValue="" onChange={e => {
-                          if (!e.target.value) return
-                          const chatId = parseInt(e.target.value)
-                          api(`/folders/${folder.id}/chats/${chatId}`, { method: 'POST' }).then(() => {
-                            setFolders(prev => prev.map(f => f.id === folder.id ? { ...f, chats: [...f.chats, chatId] } : f))
-                          })
-                          e.target.value = ''
-                        }}>
-                          <option value="" disabled>{t('addChatPlaceholder', settings.language)}</option>
-                          {chats.filter(c => !folder.chats.includes(c.id) && c.name !== 'Opus').map(chat => (
-                            <option key={chat.id} value={chat.id}>{chat.name}</option>
-                          ))}
-                        </select>
+          <div className="dialog-ef-body">
+            {/* LEFT SIDEBAR */}
+            <div className="dialog-ef-sidebar">
+              <div className="dialog-ef-sidebar-title">{t('folders', settings.language)}</div>
+              <div className="dialog-ef-sidebar-list">
+                {folders.map(folder => {
+                  const isActive = efSelectedFolderId === folder.id || (efSelectedFolderId === null && folder.id === folders[0]?.id)
+                  const isRenaming = efRenamingId === folder.id
+                  return (
+                    <div key={folder.id}
+                      className={`dialog-ef-sidebar-item ${isActive ? 'active' : ''}`}
+                      onClick={() => { setEfSelectedFolderId(folder.id); setEfAddOpen(false); setEfAddQuery(''); setEfChatQuery(''); }}
+                    >
+                      <Folder size={16} />
+                      {isRenaming ? (
+                        <input className="dialog-ef-sidebar-input" autoFocus
+                          value={efRenamingInput}
+                          onChange={e => setEfRenamingInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') { submitEfRename() }
+                            else if (e.key === 'Escape') { cancelEfRename() }
+                          }}
+                          onBlur={submitEfRename}
+                          onClick={e => e.stopPropagation()}
+                        />
                       ) : (
-                        <span className="dialog-ef-no-chats">{t('allChatsInFolder', settings.language)}</span>
+                        <span className="dialog-ef-sidebar-name">{folder.name}</span>
+                      )}
+                      <span className="dialog-ef-sidebar-count">{folder.chats.length}</span>
+                      {isActive && !isRenaming && (
+                        <div className="dialog-ef-sidebar-actions">
+                          <button className="dialog-ef-sidebar-btn" title={t('rename', settings.language)} onClick={(e) => { e.stopPropagation(); startEfRename(folder.id) }}>
+                            <Pencil size={12} />
+                          </button>
+                          <button className="dialog-ef-sidebar-btn danger" title={t('delete', settings.language)} onClick={(e) => { e.stopPropagation(); deleteFolder(folder.id) }}>
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       )}
                     </div>
-
-                    <div className="dialog-ef-actions">
-                      <button className="dialog-ef-action" onClick={() => renameFolder(folder.id)}><Pencil size={12} /> {t('rename', settings.language)}</button>
-                      <button className="dialog-ef-action dialog-ef-action-danger" onClick={() => deleteFolder(folder.id)}><Trash2 size={12} /> {t('delete', settings.language)}</button>
-                    </div>
-                  </div>
-                )}
+                  )
+                })}
+                {folders.length === 0 && <div className="dialog-ef-empty">{t('noChats', settings.language)}</div>}
               </div>
-            ))}
-          </div>
+              <div className="dialog-ef-sidebar-footer">
+                <input className="dialog-input" placeholder={t('newFolderName', settings.language)} value={folderEditInput}
+                  onChange={e => setFolderEditInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && folderEditInput.trim()) { createFolder(folderEditInput.trim()); setFolderEditInput('') } }} />
+                <button className="dialog-btn dialog-btn-primary" onClick={() => { if (folderEditInput.trim()) { createFolder(folderEditInput.trim()); setFolderEditInput('') } }}>
+                  <Plus size={16} />
+                </button>
+              </div>
+            </div>
 
-          <div className="dialog-row">
-            <input className="dialog-input" placeholder={t('newFolderName', settings.language)} value={folderEditInput}
-              onChange={e => setFolderEditInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && folderEditInput.trim()) { createFolder(folderEditInput.trim()); setFolderEditInput('') } }} />
-            <button className="dialog-btn dialog-btn-primary" onClick={() => { if (folderEditInput.trim()) { createFolder(folderEditInput.trim()); setFolderEditInput('') } }}>{t('create', settings.language)}</button>
+            {/* RIGHT MAIN */}
+            <div className="dialog-ef-main">
+              {(() => {
+                const selectedFolder = folders.find(f => f.id === efSelectedFolderId) || folders[0]
+                if (!selectedFolder) return <div className="dialog-ef-main-placeholder">{t('noChats', settings.language)}</div>
+                const folderChats = chats.filter(c => selectedFolder.chats.includes(c.id))
+                const filteredChats = folderChats.filter(c => c.name.toLowerCase().includes(efChatQuery.toLowerCase()))
+                const availableChats = chats.filter(c => !selectedFolder.chats.includes(c.id) && c.name !== 'Opus')
+                const filteredAvailable = availableChats.filter(c => c.name.toLowerCase().includes(efAddQuery.toLowerCase()))
+                return (
+                  <>
+                    <div className="dialog-ef-main-header">
+                      <div className="dialog-ef-main-title">
+                        <span>{selectedFolder.name}</span>
+                        <span className="dialog-ef-main-subtitle">{folderChats.length} {t('chats', settings.language)}</span>
+                      </div>
+                      <div className="dialog-ef-main-search">
+                        <Search size={14} />
+                        <input placeholder={t('search', settings.language)} value={efChatQuery} onChange={e => setEfChatQuery(e.target.value)} />
+                      </div>
+                    </div>
+                    <div className="dialog-ef-main-list">
+                      {filteredChats.length === 0 ? (
+                        <div className="dialog-ef-main-empty">
+                          {efChatQuery ? t('noUsersFound', settings.language) : t('allChatsInFolder', settings.language)}
+                        </div>
+                      ) : (
+                        filteredChats.map(chat => (
+                          <div key={chat.id} className="dialog-ef-main-chat">
+                            <div className="dialog-ef-main-avatar">
+                              {chat.participantAvatar ? (
+                                <img src={chat.participantAvatar} alt="" />
+                              ) : chat.isGroup ? (
+                                <Users size={14} />
+                              ) : (
+                                <User size={14} />
+                              )}
+                            </div>
+                            <span className="dialog-ef-main-chat-name">{chat.name}</span>
+                            <button className="dialog-ef-main-chat-remove" onClick={() => {
+                              api(`/folders/${selectedFolder.id}/chats/${chat.id}`, { method: 'DELETE' }).then(() => {
+                                setFolders(prev => prev.map(f => f.id === selectedFolder.id ? { ...f, chats: f.chats.filter(c => c !== chat.id) } : f))
+                              })
+                            }}>
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <div className="dialog-ef-main-add">
+                      <button className="dialog-ef-main-add-toggle" onClick={() => setEfAddOpen(v => !v)}>
+                        <Plus size={14} />
+                        <span>{t('addChat', settings.language)}</span>
+                        {efAddOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                      {efAddOpen && (
+                        <div className="dialog-ef-main-add-panel">
+                          <div className="dialog-ef-main-add-search">
+                            <Search size={14} />
+                            <input placeholder={t('search', settings.language)} value={efAddQuery} onChange={e => setEfAddQuery(e.target.value)} />
+                          </div>
+                          <div className="dialog-ef-main-add-list">
+                            {filteredAvailable.length === 0 ? (
+                              <div className="dialog-ef-main-add-empty">{t('allChatsInFolder', settings.language)}</div>
+                            ) : (
+                              filteredAvailable.map(chat => (
+                                <button key={chat.id} className="dialog-ef-main-add-item" onClick={() => {
+                                  api(`/folders/${selectedFolder.id}/chats/${chat.id}`, { method: 'POST' }).then(() => {
+                                    setFolders(prev => prev.map(f => f.id === selectedFolder.id ? { ...f, chats: [...f.chats, chat.id] } : f))
+                                  })
+                                }}>
+                                  <div className="dialog-ef-main-add-avatar">
+                                    {chat.participantAvatar ? (
+                                      <img src={chat.participantAvatar} alt="" />
+                                    ) : chat.isGroup ? (
+                                      <Users size={14} />
+                                    ) : (
+                                      <User size={14} />
+                                    )}
+                                  </div>
+                                  <span className="dialog-ef-main-add-item-name">{chat.name}</span>
+                                  <Plus size={14} className="dialog-ef-main-add-icon" />
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )
+              })()}
+            </div>
           </div>
         </div>
       </div>
@@ -1902,143 +2390,223 @@ function App() {
       </div>
     )}
 
-    {proOpen && (
-      <div className="desktop-pro-page">
-        <button className="desktop-pro-close" onClick={() => setProOpen(false)} aria-label={t('close', settings.language)}>
-          <X size={20} />
-        </button>
-        <div className="desktop-pro-shell pricing-layout">
-          <div className="desktop-pro-hero pricing-hero">
-            <div className="desktop-pro-badge">SURF PRO</div>
-            <h1 className="desktop-pro-title">
-              {t('upgradeToProLine1', settings.language)}<br />{t('upgradeToProLine2', settings.language)}
-            </h1>
-            <p className="desktop-pro-subtitle">
-              {t('proSubtitleLine1', settings.language)}<br />
-              {t('proSubtitleLine2', settings.language)}<br />
-              {t('proSubtitleLine3', settings.language)}
-            </p>
+    {createGroupOpen && (
+      <div className={`dialog-overlay create-group-overlay${createGroupClosing ? ' closing' : ''}`} onClick={closeCreateGroup}>
+        <div className={`dialog create-group-dialog${createGroupClosing ? ' closing' : ''}`} style={{ minWidth: 320, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+          <div className="dialog-header">
+            <h2 className="dialog-title">{t('newGroup', settings.language)}</h2>
+            <button className="dialog-close" onClick={closeCreateGroup}><X size={18} /></button>
           </div>
-
-          <div className="desktop-pricing-board">
-            <div className="desktop-pricing-header">
-              <div>
-                <div className="desktop-pro-panel-kicker">Plans</div>
-                <h2 className="desktop-pro-panel-title">Choose the setup that fits your team</h2>
-              </div>
-              <label className="desktop-pro-billing-toggle">
-                <span className={`desktop-pro-billing-label${proPlan === 'monthly' ? ' active' : ''}`}>Monthly</span>
-                <input
-                  type="checkbox"
-                  checked={proPlan === 'annual'}
-                  onChange={(e) => setProPlan(e.target.checked ? 'annual' : 'monthly')}
-                />
-                <span className="desktop-pro-billing-switch" />
-                <span className={`desktop-pro-billing-label${proPlan === 'annual' ? ' active' : ''}`}>
-                  Yearly
-                  <span className="desktop-pro-billing-badge">Save</span>
-                </span>
-              </label>
-            </div>
-
-            <div className="desktop-pricing-grid">
-              {(() => {
-                const selectedPlan = proPlans.find((plan: Plan) => proPlan === (plan.id === 1 ? 'monthly' : 'annual'))
-                return (
-                  <div className="desktop-pricing-card featured">
-                    <div className="desktop-pricing-card-top">
-                      <div>
-                        <div className="desktop-pricing-card-name">Pro</div>
-                        <div className="desktop-pricing-card-subtitle">For power users who want the full Surf experience.</div>
-                      </div>
-                      <div className="desktop-pricing-card-price-wrap">
-                        <div className="desktop-pricing-card-price">{selectedPlan ? `${selectedPlan.price_rub.toLocaleString()} ₽` : '—'}</div>
-                        <div className="desktop-pricing-card-period">/{proPlan === 'annual' ? 'year' : 'month'}</div>
-                      </div>
-                    </div>
-
-                    {proStatus?.active && proStatus.end_date && (
-                      <div className="desktop-pro-active-note">
-                        {t('proExpires', settings.language)}: {new Date(proStatus.end_date).toLocaleDateString()}
-                      </div>
-                    )}
-
-                    <button
-                      className={`desktop-pro-upgrade-btn${upgradeLoading ? ' loading' : ''}`}
-                      disabled={upgradeLoading}
-                      onClick={async () => {
-                        setUpgradeLoading(true)
-                        try {
-                          const planId = proPlan === 'monthly' ? 1 : 2
-                          const data = await api('/subscription/create', {
-                            method: 'POST',
-                            body: JSON.stringify({ plan_id: planId })
-                          })
-                          if (data.confirmation_url) {
-                            window.location.href = data.confirmation_url
-                          }
-                        } catch (err: unknown) {
-                          alert(err instanceof Error ? err.message : 'Payment failed')
-                        } finally {
-                          setUpgradeLoading(false)
-                        }
-                      }}
-                    >
-                      {upgradeLoading ? '...' : t('upgrade', settings.language)}
-                    </button>
-
-                    <div className="desktop-pricing-feature-list">
-                      <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>{t('opusInChats', settings.language)}</span></div>
-                      <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>{t('opusInChatsDesc', settings.language)}</span></div>
-                      <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>{t('doubledLimits', settings.language)}</span></div>
-                      <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>{t('doubledLimitsDesc', settings.language)}</span></div>
-                      <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>{t('profileBadge', settings.language)}</span></div>
-                      <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>{t('profileBadgeDesc', settings.language)}</span></div>
-                    </div>
+          <input
+            className="dialog-input"
+            placeholder={t('groupName', settings.language)}
+            value={createGroupName}
+            onChange={e => setCreateGroupName(e.target.value)}
+            autoFocus
+          />
+          <div className="dialog-text">{t('selectMembers', settings.language)}</div>
+          <div className="dialog-ef-list" style={{ maxHeight: 260 }}>
+            {chats.filter(c => !c.isGroup && c.participantId && c.name !== 'Opus').map(contact => {
+              const selected = createGroupSelected.includes(contact.participantId!)
+              return (
+                <button key={contact.participantId} className="context-menu-item" onClick={() => {
+                  setCreateGroupSelected(prev => selected ? prev.filter(id => id !== contact.participantId) : [...prev, contact.participantId!])
+                }} style={{ justifyContent: 'flex-start', gap: 10 }}>
+                  <div className="item-avatar" style={contact.participantAvatar ? { backgroundImage: `url(${contact.participantAvatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                    {!contact.participantAvatar && <User size={16} strokeWidth={1.5} />}
                   </div>
-                )
-              })()}
-
-              <div className="desktop-pricing-card muted">
-                <div className="desktop-pricing-card-top">
-                  <div>
-                    <div className="desktop-pricing-card-name">Custom</div>
-                    <div className="desktop-pricing-card-subtitle">For teams that need a tailored setup, onboarding, and special limits.</div>
+                  <span style={{ flex: 1, textAlign: 'left' }}>{contact.name}</span>
+                  <div style={{ width: 18, height: 18, borderRadius: 4, border: '1.5px solid #8c8c88', background: selected ? '#3287FE' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {selected && <Check size={12} color="#fff" />}
                   </div>
-                  <div className="desktop-pricing-card-price-wrap no-price">
-                    <div className="desktop-pricing-card-price">Custom</div>
-                    <div className="desktop-pricing-card-period">Contact us</div>
-                  </div>
-                </div>
-
-                <button
-                  className="desktop-pro-upgrade-btn desktop-pro-upgrade-btn-secondary"
-                  onClick={() => setPageStack(prev => [...prev, 'contacts'])}
-                >
-                  {t('upgrade', settings.language)}
                 </button>
-
-                <div className="desktop-pricing-feature-list">
-                  <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>Priority onboarding</span></div>
-                  <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>Custom limits and quotas</span></div>
-                  <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>Dedicated support channel</span></div>
-                  <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>Team rollout assistance</span></div>
-                  <div className="desktop-pricing-feature-item"><Check size={16} strokeWidth={2.4} /><span>Flexible billing arrangement</span></div>
-                </div>
-              </div>
-            </div>
-
-            <div className="desktop-pro-legal">
-              <button className="desktop-pro-legal-link" onClick={() => setPageStack(prev => [...prev, 'offer'])}>{t('termsOfService', settings.language)}</button>
-              <span>·</span>
-              <button className="desktop-pro-legal-link" onClick={() => setPageStack(prev => [...prev, 'contacts'])}>{t('contactsTitle', settings.language)}</button>
-            </div>
+              )
+            })}
+          </div>
+          <div className="dialog-actions">
+            <button className="dialog-btn dialog-btn-cancel" onClick={closeCreateGroup}>{t('cancel', settings.language)}</button>
+            <button
+              className="dialog-btn dialog-btn-primary"
+              disabled={!createGroupName.trim() || createGroupSelected.length === 0}
+              onClick={handleCreateGroup}
+            >{t('create', settings.language)}</button>
           </div>
         </div>
       </div>
     )}
 
+    {addMemberDialogOpen && (
+      <div className="dialog-overlay" onClick={() => setAddMemberDialogOpen(false)}>
+        <div className="dialog" style={{ minWidth: 320, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+          <div className="dialog-header">
+            <h2 className="dialog-title">{t('addMember', settings.language)}</h2>
+            <button className="dialog-close" onClick={() => setAddMemberDialogOpen(false)}><X size={18} /></button>
+          </div>
+          <input
+            ref={groupInfoAddInputRef}
+            className="dialog-input"
+            placeholder={t('searchUsers', settings.language)}
+            value={groupInfoAddQuery}
+            onChange={e => setGroupInfoAddQuery(e.target.value)}
+          />
+          {groupInfoAddResults.length > 0 && (
+            <div className="dialog-ef-list" style={{ maxHeight: 260 }}>
+              {groupInfoAddResults.map(u => (
+                <button key={u.id} className="context-menu-item" onClick={() => { handleAddGroupMember(u.id); setAddMemberDialogOpen(false) }} style={{ justifyContent: 'flex-start', gap: 10 }}>
+                  <div className="item-avatar" style={u.avatar ? { backgroundImage: `url(${u.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                    {!u.avatar && <User size={16} strokeWidth={1.5} />}
+                  </div>
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+                    <span style={{ color: '#fff' }}>{u.name} {u.surname}</span>
+                    {u.username && <span style={{ color: '#8c8c88', fontSize: 12 }}>@{u.username}</span>}
+                  </div>
+                  <Plus size={16} color="#3287FE" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    )}
 
+    {proOpen && (
+      <div className="desktop-pro-page">
+        <button className="desktop-pro-close" onClick={() => setProOpen(false)} aria-label={t('close', settings.language)}>
+          <X size={20} />
+        </button>
+        <div className="desktop-pro-plans">
+          <h1 className="desktop-pro-plans-title">{t('upgradeYourPlan', settings.language)}</h1>
+          <div className="desktop-pro-plans-toggle">
+            <div className={`desktop-pro-plans-toggle-slider${proPlan === 'annual' ? ' right' : ''}`} />
+            <button
+              className={`desktop-pro-plans-toggle-btn${proPlan === 'monthly' ? ' active' : ''}`}
+              onClick={() => setProPlan('monthly')}
+            >
+              {t('month', settings.language)}
+            </button>
+            <button
+              className={`desktop-pro-plans-toggle-btn${proPlan === 'annual' ? ' active' : ''}`}
+              onClick={() => setProPlan('annual')}
+            >
+              {t('year', settings.language)}
+            </button>
+          </div>
+
+          <div className="desktop-pro-plans-grid">
+            <div className="desktop-pro-plan-card desktop-pro-plan-card-free">
+              <div>
+                <div className="desktop-pro-plan-card-name">{t('free', settings.language)}</div>
+                <div className="desktop-pro-plan-card-price-wrap">
+                  <span className="desktop-pro-plan-card-currency">₽</span>
+                  <span className="desktop-pro-plan-card-price">0</span>
+                </div>
+                <div className="desktop-pro-plan-card-desc">{t('freePlanDesc', settings.language)}</div>
+                <ul className="desktop-pro-plan-card-features">
+                  <li>
+                    <span className="desktop-pro-plan-card-check free"><Check size={14} strokeWidth={2.5} /></span>
+                    {t('conversations', settings.language)}
+                  </li>
+                  <li>
+                    <span className="desktop-pro-plan-card-check free"><Check size={14} strokeWidth={2.5} /></span>
+                    {t('privacyCustomization', settings.language)}
+                  </li>
+                  <li>
+                    <span className="desktop-pro-plan-card-check free"><Check size={14} strokeWidth={2.5} /></span>
+                    {t('basicAiTools', settings.language)}
+                  </li>
+                </ul>
+              </div>
+              <button className="desktop-pro-plan-card-btn" disabled>
+                {proStatus?.active ? t('downgrade', settings.language) : t('currentPlan', settings.language)}
+              </button>
+            </div>
+
+            <div className="desktop-pro-plan-card desktop-pro-plan-card-pro">
+              <div>
+                <div className="desktop-pro-plan-card-name">{t('pro', settings.language)}</div>
+                <div className="desktop-pro-plan-card-price-wrap">
+                  <span className="desktop-pro-plan-card-currency">₽</span>
+                  <span className="desktop-pro-plan-card-price">
+                    {proPlans.find((plan: Plan) => proPlan === (plan.id === 1 ? 'monthly' : 'annual'))?.price_rub.toLocaleString() || '—'}
+                  </span>
+                </div>
+                <div className="desktop-pro-plan-card-desc">{t('proPlanDesc', settings.language)}</div>
+                <ul className="desktop-pro-plan-card-features">
+                  <li>
+                    <span className="desktop-pro-plan-card-check pro"><Check size={14} strokeWidth={2.5} /></span>
+                    {t('opusInChats', settings.language)}
+                  </li>
+                  <li>
+                    <span className="desktop-pro-plan-card-check pro"><Check size={14} strokeWidth={2.5} /></span>
+                    {t('doubledLimits', settings.language)}
+                  </li>
+                  <li>
+                    <span className="desktop-pro-plan-card-check pro"><Check size={14} strokeWidth={2.5} /></span>
+                    {t('profileBadge', settings.language)}
+                  </li>
+                  <li>
+                    <span className="desktop-pro-plan-card-check pro"><Check size={14} strokeWidth={2.5} /></span>
+                    {t('advancedAiTools', settings.language)}
+                  </li>
+                  <li>
+                    <span className="desktop-pro-plan-card-check pro"><Check size={14} strokeWidth={2.5} /></span>
+                    {t('appearanceCustomization', settings.language)}
+                  </li>
+                  <li>
+                    <span className="desktop-pro-plan-card-check pro"><Check size={14} strokeWidth={2.5} /></span>
+                    {t('appearanceCustomization', settings.language)}
+                  </li>
+                </ul>
+              </div>
+              <button
+                className={`desktop-pro-plan-card-btn${upgradeLoading ? ' loading' : ''}`}
+                disabled={upgradeLoading || proStatus?.active}
+                onClick={async () => {
+                  if (proStatus?.active) return
+                  setUpgradeLoading(true)
+                  try {
+                    const planId = proPlan === 'monthly' ? 1 : 2
+                    const data = await api('/subscription/create', {
+                      method: 'POST',
+                      body: JSON.stringify({ plan_id: planId })
+                    })
+                    if (data.confirmation_url) {
+                      window.location.href = data.confirmation_url
+                    }
+                  } catch (err: unknown) {
+                    setPaymentError(err instanceof Error ? err.message : 'Payment failed')
+                  } finally {
+                    setUpgradeLoading(false)
+                  }
+                }}
+              >
+                {upgradeLoading ? <Loader2 size={20} className="btn-spinner" /> : (proStatus?.active ? t('currentPlan', settings.language) : t('upgrade', settings.language))}
+              </button>
+            </div>
+          </div>
+
+          <div className="desktop-pro-legal">
+            <button className="desktop-pro-legal-link" onClick={() => setPageStack(prev => [...prev, 'offer'])}>{t('termsOfService', settings.language)}</button>
+            <button className="desktop-pro-legal-link" onClick={() => setPageStack(prev => [...prev, 'contacts'])}>{t('contactsTitle', settings.language)}</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {paymentError && (
+      <div className={`payment-error-overlay${paymentErrorClosing ? ' closing' : ''}`} onClick={closePaymentError}>
+        <div className={`payment-error-modal${paymentErrorClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+          <div className="payment-error-icon">
+            <AlertCircle size={36} />
+          </div>
+          <h2 className="payment-error-title">{t('paymentError', settings.language)}</h2>
+          <p className="payment-error-message">{paymentError}</p>
+          <button className="payment-error-btn" onClick={closePaymentError}>
+            {t('close', settings.language)}
+          </button>
+        </div>
+      </div>
+    )}
 
     {showProSuccess && (
       <ProSuccess
@@ -2062,6 +2630,57 @@ function App() {
         setPageStack(prev => prev.filter(p => p !== 'contacts'))
         window.history.replaceState(null, '', window.location.origin)
       }} />
+    )}
+
+    {newFolderOpen && (
+      <div className={`dialog-overlay new-folder-overlay${newFolderClosing ? ' closing' : ''}`} onClick={closeNewFolder}>
+        <div className={`new-folder-dialog${newFolderClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+          <h2 className="new-folder-title">{t('folderNamePrompt', settings.language)}</h2>
+          <input
+            className="new-folder-input"
+            value={newFolderInput}
+            onChange={e => setNewFolderInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') submitNewFolder() }}
+            autoFocus
+          />
+          <div className="new-folder-actions">
+            <button className="new-folder-btn cancel" onClick={closeNewFolder}>{t('cancel', settings.language)}</button>
+            <button className="new-folder-btn primary" onClick={submitNewFolder} disabled={!newFolderInput.trim()}>{t('create', settings.language)}</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {renameFolderId && (
+      <div className={`dialog-overlay rename-folder-overlay${renameFolderClosing ? ' closing' : ''}`} onClick={closeRenameFolder}>
+        <div className={`rename-folder-dialog${renameFolderClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+          <h2 className="rename-folder-title">{t('renameFolderPrompt', settings.language)}</h2>
+          <input
+            className="rename-folder-input"
+            value={renameFolderInput}
+            onChange={e => setRenameFolderInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') submitRenameFolder() }}
+            autoFocus
+          />
+          <div className="rename-folder-actions">
+            <button className="rename-folder-btn cancel" onClick={closeRenameFolder}>{t('cancel', settings.language)}</button>
+            <button className="rename-folder-btn primary" onClick={submitRenameFolder} disabled={!renameFolderInput.trim()}>{t('save', settings.language)}</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {deleteFolderConfirm && (
+      <div className={`dialog-overlay delete-folder-overlay${deleteFolderConfirmClosing ? ' closing' : ''}`} onClick={closeDeleteFolderConfirm}>
+        <div className={`delete-folder-dialog${deleteFolderConfirmClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+          <h2 className="delete-folder-title">{t('deleteFolderConfirm', settings.language)}</h2>
+          <p className="delete-folder-message">{t('deleteFolderConfirmDesc', settings.language)}</p>
+          <div className="delete-folder-actions">
+            <button className="delete-folder-btn cancel" onClick={closeDeleteFolderConfirm}>{t('cancel', settings.language)}</button>
+            <button className="delete-folder-btn danger" onClick={confirmDeleteFolder}>{t('delete', settings.language)}</button>
+          </div>
+        </div>
+      </div>
     )}
 
     {toast && <div className={`toast${toastClosing ? ' closing' : ''}`}>{toast}</div>}

@@ -26,12 +26,15 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    is_group INTEGER DEFAULT 0,
+    avatar TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now'))
   );
 
   CREATE TABLE IF NOT EXISTS chat_participants (
     chat_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
+    role TEXT DEFAULT 'member',
     PRIMARY KEY (chat_id, user_id),
     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -50,8 +53,14 @@ db.exec(`
 
 try { db.exec(`ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''`) } catch {};
 try { db.exec(`ALTER TABLE users ADD COLUMN privacy TEXT DEFAULT '{"phone":"Everyone","email":"Everyone","bio":"Everyone"}'`) } catch {};
+try { db.exec(`ALTER TABLE users ADD COLUMN last_seen TEXT DEFAULT ''`) } catch {};
 
 try { db.exec(`ALTER TABLE chat_participants ADD COLUMN pinned INTEGER DEFAULT 0`) } catch {};
+try { db.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`) } catch {};
+try { db.exec(`ALTER TABLE chats ADD COLUMN avatar TEXT DEFAULT ''`) } catch {};
+try { db.exec(`ALTER TABLE chat_participants ADD COLUMN role TEXT DEFAULT 'member'`) } catch {};
+try { db.exec(`UPDATE chats SET is_group = 0 WHERE is_group IS NULL`) } catch {};
+try { db.exec(`UPDATE chat_participants SET role = 'admin' WHERE role IS NULL OR role = ''`) } catch {};
 try { db.exec(`ALTER TABLE messages ADD COLUMN reply_to_id INTEGER`) } catch {};
 try { db.exec(`ALTER TABLE messages ADD COLUMN attachment_url TEXT`) } catch {};
 try { db.exec(`ALTER TABLE messages ADD COLUMN attachment_type TEXT`) } catch {};
@@ -82,6 +91,15 @@ db.exec(`
     cleared_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (chat_id, user_id),
     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS deleted_messages (
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    deleted_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (message_id, user_id),
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 `)

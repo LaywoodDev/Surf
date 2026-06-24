@@ -54,6 +54,31 @@ app.post('/api/upload/file', authMiddleware, upload.single('file'), (req: any, r
   res.json({ url, type })
 })
 
+app.post('/api/upload/group-avatar', authMiddleware, upload.single('avatar'), (req: any, res: any) => {
+  if (!req.file) {
+    res.status(400).json({ error: 'No file uploaded' })
+    return
+  }
+  const { chatId } = req.body
+  if (!chatId) {
+    res.status(400).json({ error: 'chatId is required' })
+    return
+  }
+  const participant = db.prepare('SELECT role FROM chat_participants WHERE chat_id = ? AND user_id = ?').get(chatId, req.userId) as any
+  const chat = db.prepare('SELECT is_group FROM chats WHERE id = ?').get(chatId) as any
+  if (!chat || chat.is_group !== 1) {
+    res.status(400).json({ error: 'Not a group chat' })
+    return
+  }
+  if (!participant || participant.role !== 'admin') {
+    res.status(403).json({ error: 'Only admin can change group avatar' })
+    return
+  }
+  const url = `/uploads/${req.file.filename}`
+  db.prepare('UPDATE chats SET avatar = ? WHERE id = ?').run(url, chatId)
+  res.json({ avatar: url })
+})
+
 app.use('/api/auth', authRoutes)
 app.use('/api/chats', chatsRoutes)
 app.use('/api/folders', foldersRoutes)
