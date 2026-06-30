@@ -5,6 +5,12 @@ import App from './App.tsx'
 import MobileApp from './MobileApp.tsx'
 import './MobileApp.css'
 
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch((err) => {
+    console.error('Service worker registration failed:', err)
+  })
+}
+
 function Root() {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
 

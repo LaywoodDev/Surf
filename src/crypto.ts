@@ -1,7 +1,7 @@
 const PRIV_KEY = 'e2e_private'
 const PUB_KEY = 'e2e_public'
 const USER_KEY = 'e2e_user_id'
-const sharedCache = new Map<number, CryptoKey>()
+const sharedCache = new Map<number, CryptoKey | null>()
 
 export function hasKeys(userId: number): boolean {
   return localStorage.getItem(USER_KEY) === String(userId) && !!localStorage.getItem(PRIV_KEY)
@@ -57,6 +57,10 @@ export async function getSharedKey(userId: number, token: string): Promise<Crypt
     })
     if (!res.ok) return null
     const data = await res.json()
+    if (!data.publicKey) {
+      sharedCache.set(userId, null)
+      return null
+    }
     const key = await derive(data.publicKey)
     sharedCache.set(userId, key)
     return key

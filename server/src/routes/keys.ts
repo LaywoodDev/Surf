@@ -20,7 +20,7 @@ router.post('/', (req: AuthRequest, res: Response) => {
 router.get('/:userId', (req: AuthRequest, res: Response) => {
   const row = db.prepare('SELECT public_key FROM public_keys WHERE user_id = ?').get(req.params.userId) as any
   if (!row) {
-    res.status(404).json({ error: 'Public key not found' })
+    res.json({ publicKey: null })
     return
   }
   res.json({ publicKey: JSON.parse(row.public_key) })

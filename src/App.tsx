@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Search, ArrowUp, User, Users, Copy, Trash2, Image, File, Camera, Settings, LogOut, Shield, Pencil, MoreVertical, Pin, Folder, X, Reply, ChevronDown, BarChart3, Cloud, BadgeCheck, ChevronRight, CheckCircle, Check, Loader2, AlertCircle } from 'lucide-react'
-import { t, langName, p } from './i18n'
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react'
+import { Plus, Search, ArrowUp, User, Users, Copy, Trash2, Image, File, Camera, Settings, LogOut, Shield, ShieldOff, Pencil, MoreVertical, Pin, Folder, X, Reply, BarChart3, ChevronRight, CheckCircle, Check, Loader2, AlertCircle, UserPlus, UserMinus, Palette, Forward, Link } from 'lucide-react'
+import { t, langName, p, formatTime } from './i18n'
 import * as e2e from './crypto'
 import Offer from './pages/Offer'
 import Contacts from './pages/Contacts'
 import ProSuccess from './pages/ProSuccess'
 import './App.css'
+import { registerPush, unregisterPush } from './push'
 
 interface Chat {
   id: number
@@ -21,6 +22,7 @@ interface Chat {
   participantCount?: number
   avatar?: string
   role?: 'admin' | 'member'
+  blocked?: boolean
 }
 
 interface GroupParticipant {
@@ -38,14 +40,6 @@ interface Folder {
   icon: string
   sortOrder: number
   chats: number[]
-}
-
-interface Plan {
-  id: number
-  name: string
-  price_rub: number
-  duration_days: number
-  description: string
 }
 
 interface ProStatus {
@@ -86,6 +80,8 @@ interface Message {
   attachmentUrl?: string
   attachmentType?: string
   pollId?: number
+  forwardFromId?: number
+  forwardFromName?: string
 }
 
 interface UserData {
@@ -97,6 +93,8 @@ interface UserData {
   phone: string
   bio: string
   avatar?: string
+  online?: boolean
+  lastSeen?: string | null
 }
 
 const API = '/api'
@@ -105,10 +103,13 @@ const SETTINGS_STORAGE_KEY = 'surf_settings'
 const defaultSettings = {
   language: 'English',
   theme: 'Dark',
+  timeFormat: '24h',
   previews: 'On',
   sounds: 'On',
+  pushNotifications: true,
   lastSeen: 'Everyone',
   profilePhoto: 'Everyone',
+  addToGroup: 'Everyone',
   autoDownload: 'Wi-Fi only',
   phonePrivacy: 'Everyone',
   emailPrivacy: 'Everyone',
@@ -242,22 +243,50 @@ function App() {
   const avatarFileRef = useRef<HTMLInputElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const [attachMenu, setAttachMenu] = useState<{ x: number; y: number; dir: 'up' | 'down' } | null>(null)
+  const [attachMenuClosing, setAttachMenuClosing] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: number } | null>(null)
   const [aiContextMenu, setAiContextMenu] = useState<{ x: number; y: number; index: number } | null>(null)
   const [chatContextMenu, setChatContextMenu] = useState<{ x: number; y: number; chatId: number } | null>(null)
+  const [chatContextMenuClosing, setChatContextMenuClosing] = useState(false)
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(null)
+  const [profileMenuClosing, setProfileMenuClosing] = useState(false)
   const [settingDropdown, setSettingDropdown] = useState<{ key: string; x: number; y: number } | null>(null)
   const [chatMenu, setChatMenu] = useState<{ x: number; y: number } | null>(null)
+  const [chatMenuClosing, setChatMenuClosing] = useState(false)
   const [memberMenu, setMemberMenu] = useState<{ participantId: number; x: number; y: number } | null>(null)
+  const [groupMoreMenu, setGroupMoreMenu] = useState<{ x: number; y: number } | null>(null)
+  const [groupMoreMenuClosing, setGroupMoreMenuClosing] = useState(false)
+  const [contactMoreMenu, setContactMoreMenu] = useState<{ x: number; y: number } | null>(null)
+  const [contactMoreMenuClosing, setContactMoreMenuClosing] = useState(false)
   const [addMemberDialogOpen, setAddMemberDialogOpen] = useState(false)
+  const [addMemberDialogClosing, setAddMemberDialogClosing] = useState(false)
+  const [inviteLinkDialogOpen, setInviteLinkDialogOpen] = useState(false)
+  const [inviteLinkDialogClosing, setInviteLinkDialogClosing] = useState(false)
+  const [inviteLinkCode, setInviteLinkCode] = useState<string | null>(null)
+  const [inviteLinkLoading, setInviteLinkLoading] = useState(false)
   const groupInfoAddInputRef = useRef<HTMLInputElement>(null)
+  const [groupEditDialogOpen, setGroupEditDialogOpen] = useState(false)
+  const [groupEditDialogClosing, setGroupEditDialogClosing] = useState(false)
+  const [groupEditName, setGroupEditName] = useState('')
+  const [groupEditDisableCopying, setGroupEditDisableCopying] = useState(false)
+  const groupEditInputRef = useRef<HTMLInputElement>(null)
+  const groupEditAvatarInputRef = useRef<HTMLInputElement>(null)
   const [clearChatSubmenu, setClearChatSubmenu] = useState(false)
   const [deleteMessageSubmenu, setDeleteMessageSubmenu] = useState(false)
-  const [settingsSection, setSettingsSection] = useState<'general' | 'account' | 'privacy'>('general')
+  const [settingsSection, setSettingsSection] = useState<'general' | 'appearance' | 'account' | 'privacy'>('general')
   const [editProfile, setEditProfile] = useState({ username: '', phone: '', bio: '' })
   const [proOpen, setProOpen] = useState(false)
+  const [inviteJoinDialogOpen, setInviteJoinDialogOpen] = useState(false)
+  const [inviteJoinDialogClosing, setInviteJoinDialogClosing] = useState(false)
+  const [inviteJoinCode, setInviteJoinCode] = useState<string | null>(null)
+  const [inviteJoinPreview, setInviteJoinPreview] = useState<{ id: number; name: string; avatar?: string; participantCount: number; adminName?: string; adminAvatar?: string } | null>(null)
+  const [inviteJoinLoading, setInviteJoinLoading] = useState(false)
+  const [inviteJoinError, setInviteJoinError] = useState<string | null>(null)
+  const [showInviteJoin, setShowInviteJoin] = useState(false)
   const [proPlan, setProPlan] = useState<'monthly' | 'annual'>('annual')
-  const [proPlans, setProPlans] = useState<Plan[]>([])
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message?: string; onConfirm: () => void } | null>(null)
+  const [confirmDialogClosing, setConfirmDialogClosing] = useState(false)
+
   const [proStatus, setProStatus] = useState<ProStatus | null>(null)
   const [upgradeLoading, setUpgradeLoading] = useState(false)
   const [paymentError, setPaymentError] = useState<string | null>(null)
@@ -269,6 +298,18 @@ function App() {
       setPaymentErrorClosing(false)
     }, 220)
   }
+
+  const [contactConfirm, setContactConfirm] = useState<{ action: 'add' | 'delete' | 'block' | 'unblock'; userId: number; name: string } | null>(null)
+  const [contactConfirmClosing, setContactConfirmClosing] = useState(false)
+
+  const closeContactConfirm = useCallback(() => {
+    setContactConfirmClosing(true)
+    setTimeout(() => {
+      setContactConfirm(null)
+      setContactConfirmClosing(false)
+    }, 220)
+  }, [])
+
   const closeCreateGroup = useCallback(() => {
     setCreateGroupClosing(true)
     setTimeout(() => {
@@ -325,6 +366,8 @@ function App() {
   const [contactProfile, setContactProfile] = useState<UserData | null>(null)
   const [viewedUser, setViewedUser] = useState<UserData | null>(null)
   const [contacts, setContacts] = useState<UserData[]>([])
+  const [blockedUsers, setBlockedUsers] = useState<UserData[]>([])
+  const [mentionableUsers, setMentionableUsers] = useState<UserData[]>([])
   const [mentionMenu, setMentionMenu] = useState<{ chatId: number; query: string } | null>(null)
   const [replyTo, setReplyTo] = useState<{ messageId: number; text: string; attachmentUrl?: string; attachmentType?: string } | null>(null)
   const [pendingAttachments, setPendingAttachments] = useState<{ url: string; type: string; name: string }[]>([])
@@ -332,10 +375,13 @@ function App() {
   const [folders, setFolders] = useState<Folder[]>([])
   const [activeFolderId, setActiveFolderId] = useState<number | null>(null)
   const [folderDropdown, setFolderDropdown] = useState<{ chatId: number; x: number; y: number } | null>(null)
+  const [folderDropdownClosing, setFolderDropdownClosing] = useState(false)
   const [folderContextMenu, setFolderContextMenu] = useState<{ x: number; y: number; folderId: number } | null>(null)
   const [newChatCtxMenu, setNewChatCtxMenu] = useState<{ x: number; y: number } | null>(null)
+  const [newChatCtxMenuClosing, setNewChatCtxMenuClosing] = useState(false)
   const [folderEditOpen, setFolderEditOpen] = useState(false)
-  const [folderEditInput, setFolderEditInput] = useState('')
+  const [folderEditClosing, setFolderEditClosing] = useState(false)
+  const [folderEditSearch, setFolderEditSearch] = useState('')
   const [deleteFolderConfirm, setDeleteFolderConfirm] = useState<number | null>(null)
   const [deleteFolderConfirmClosing, setDeleteFolderConfirmClosing] = useState(false)
   const [renameFolderId, setRenameFolderId] = useState<number | null>(null)
@@ -344,18 +390,25 @@ function App() {
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [newFolderInput, setNewFolderInput] = useState('')
   const [newFolderClosing, setNewFolderClosing] = useState(false)
-  const [efSelectedFolderId, setEfSelectedFolderId] = useState<number | null>(null)
   const [efRenamingId, setEfRenamingId] = useState<number | null>(null)
   const [efRenamingInput, setEfRenamingInput] = useState('')
-  const [efAddOpen, setEfAddOpen] = useState(false)
-  const [efAddQuery, setEfAddQuery] = useState('')
-  const [efChatQuery, setEfChatQuery] = useState('')
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null)
   const [avatarOpen, setAvatarOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [toastClosing, setToastClosing] = useState(false)
   const typingHeartbeatRef = useRef<Record<number, number>>({})
   const typingStopTimeoutRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
+  const closeFolderEdit = useCallback(() => {
+    if (!folderEditOpen && !folderEditClosing) return
+    setFolderEditClosing(true)
+    setTimeout(() => {
+      setFolderEditOpen(false)
+      setFolderEditClosing(false)
+      setEfRenamingId(null)
+      setEfRenamingInput('')
+      setFolderEditSearch('')
+    }, 220)
+  }, [folderEditOpen, folderEditClosing])
 
   const [pollModalOpen, setPollModalOpen] = useState(false)
   const [pollQuestion, setPollQuestion] = useState('')
@@ -370,6 +423,47 @@ function App() {
   const [groupInfoAddQuery, setGroupInfoAddQuery] = useState('')
   const [groupInfoAddResults, setGroupInfoAddResults] = useState<UserData[]>([])
   const [groupAvatarUploading, setGroupAvatarUploading] = useState(false)
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false)
+  const [searchPanelClosing, setSearchPanelClosing] = useState(false)
+  const [searchMessagesQuery, setSearchMessagesQuery] = useState('')
+  const searchMessagesInputRef = useRef<HTMLInputElement>(null)
+  const [forwardPickerOpen, setForwardPickerOpen] = useState(false)
+  const [forwardPickerClosing, setForwardPickerClosing] = useState(false)
+  const [forwardMessage, setForwardMessage] = useState<Message | null>(null)
+  const [forwardSearchQuery, setForwardSearchQuery] = useState('')
+
+  const openForwardPicker = useCallback((msg: Message) => {
+    setForwardMessage(msg)
+    setForwardPickerOpen(true)
+    setForwardSearchQuery('')
+  }, [])
+
+  const closeForwardPicker = useCallback(() => {
+    if (!forwardPickerOpen || forwardPickerClosing) return
+    setForwardPickerClosing(true)
+    setTimeout(() => {
+      setForwardPickerOpen(false)
+      setForwardPickerClosing(false)
+      setForwardMessage(null)
+      setForwardSearchQuery('')
+    }, 220)
+  }, [forwardPickerOpen, forwardPickerClosing])
+
+  const openSearchPanel = useCallback(() => {
+    setSearchPanelOpen(true)
+    setSearchMessagesQuery('')
+    setTimeout(() => searchMessagesInputRef.current?.focus(), 100)
+  }, [])
+
+  const closeSearchPanel = useCallback(() => {
+    if (!searchPanelOpen || searchPanelClosing) return
+    setSearchPanelClosing(true)
+    setTimeout(() => {
+      setSearchPanelOpen(false)
+      setSearchPanelClosing(false)
+      setSearchMessagesQuery('')
+    }, 220)
+  }, [searchPanelOpen, searchPanelClosing])
 
   const profileAvatarRef = useRef<HTMLDivElement>(null)
   const avatarCloneRef = useRef<{ clone: HTMLElement; original: HTMLElement; overlay: HTMLDivElement } | null>(null)
@@ -385,14 +479,19 @@ function App() {
         setUser(u)
         setEditProfile({ username: u.username || '', phone: u.phone || '', bio: u.bio || '' })
         if (u.privacy) {
-          setSettings(prev => ({
+          setSettings((prev: typeof defaultSettings) => ({
             ...prev,
             phonePrivacy: u.privacy.phone || 'Everyone',
             emailPrivacy: u.privacy.email || 'Everyone',
             bioPrivacy: u.privacy.bio || 'Everyone',
             profilePhoto: u.privacy.profilePhoto || 'Everyone',
             lastSeen: u.privacy.lastSeen || 'Everyone',
+            addToGroup: u.privacy.addToGroup || 'Everyone',
           }))
+        }
+        const loadedSettings = loadSettings()
+        if (loadedSettings.pushNotifications) {
+          registerPush().catch(() => {})
         }
       }).catch(() => {
         localStorage.removeItem('token')
@@ -403,20 +502,54 @@ function App() {
   }, [token])
 
   useEffect(() => {
+    const match = window.location.pathname.match(/^\/join\/(.+)$/)
+    if (match && token) {
+      const code = match[1]
+      setInviteJoinCode(code)
+      setInviteJoinLoading(true)
+      setInviteJoinDialogOpen(true)
+      api(`/chats/join/${code}`)
+        .then((res: any) => {
+          setInviteJoinPreview(res)
+          setInviteJoinError(null)
+        })
+        .catch((err: any) => {
+          setInviteJoinError(err.message || 'Invalid invite link')
+        })
+        .finally(() => setInviteJoinLoading(false))
+      window.history.replaceState({}, '', '/')
+    }
+  }, [token])
+
+  useEffect(() => {
     if (isLoggedIn) {
-      api('/chats').then(async (data: Chat[]) => {
-        const decrypted = await Promise.all(data.map(async (c) => {
-          if (c.participantId && c.lastMessage && e2e.isEncrypted(c.lastMessage)) {
-            const key = await e2e.getSharedKey(c.participantId, localStorage.getItem('token')!)
-            if (key) c.lastMessage = await e2e.decrypt(key, c.lastMessage)
-          }
-          return c
-        }))
-        setChats(decrypted)
-      })
+      const loadChats = () => {
+        api('/chats').then(async (data: Chat[]) => {
+          const decrypted = await Promise.all(data.map(async (c) => {
+            if (c.participantId && c.lastMessage && e2e.isEncrypted(c.lastMessage)) {
+              const key = await e2e.getSharedKey(c.participantId, localStorage.getItem('token')!)
+              if (key) c.lastMessage = await e2e.decrypt(key, c.lastMessage)
+            }
+            return c
+          }))
+          setChats(decrypted)
+        })
+      }
+      const loadContacts = () => {
+        api('/users/contacts').then(setContacts)
+        api('/users/blocked').then(setBlockedUsers)
+        api('/users/mentionable').then(setMentionableUsers)
+      }
+      loadChats()
+      loadContacts()
       api('/folders').then(setFolders)
-      api('/users/contacts').then(setContacts)
       api('/subscription/status').then(setProStatus).catch(() => {})
+      const chatsInterval = window.setInterval(loadChats, 10000)
+      const contactsInterval = window.setInterval(loadContacts, 10000)
+      return () => {
+        window.clearInterval(chatsInterval)
+        window.clearInterval(contactsInterval)
+      }
     }
   }, [isLoggedIn])
 
@@ -428,12 +561,6 @@ function App() {
     }, 30000)
     return () => window.clearInterval(pingInterval)
   }, [isLoggedIn])
-
-  useEffect(() => {
-    if (proOpen) {
-      api('/subscription/plans').then(data => setProPlans(data.plans || [])).catch(() => {})
-    }
-  }, [proOpen])
 
   useEffect(() => {
     localStorage.setItem(CHAT_DRAFTS_STORAGE_KEY, JSON.stringify(chatInputTexts))
@@ -469,6 +596,14 @@ function App() {
     return () => window.clearInterval(interval)
   }, [activeChatId, chats])
 
+  useLayoutEffect(() => {
+    if (activeChatId) {
+      setMessages([])
+      setContactProfile(null)
+      setGroupParticipants([])
+    }
+  }, [activeChatId])
+
   useEffect(() => {
     if (activeChatId) {
       const chat = chats.find(c => c.id === activeChatId)
@@ -498,12 +633,15 @@ function App() {
       }
 
       fetchMessages()
-      if (chat?.isGroup) {
-        api(`/chats/${activeChatId}/participants`).then(setGroupParticipants).catch(() => setGroupParticipants([]))
-        setContactProfile(null)
-      } else {
-        api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
+      const fetchOtherUser = () => {
+        if (chat?.isGroup) {
+          api(`/chats/${activeChatId}/participants`).then(setGroupParticipants).catch(() => setGroupParticipants([]))
+          setContactProfile(null)
+        } else {
+          api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
+        }
       }
+      fetchOtherUser()
       api(`/polls/chat/${activeChatId}`).then((polls: Poll[]) => {
         const cacheUpdate: Record<number, Poll> = {}
         polls.forEach(p => { cacheUpdate[p.id] = p })
@@ -511,8 +649,10 @@ function App() {
       }).catch(() => {})
 
       const pollInterval = window.setInterval(fetchMessages, 3000)
+      const otherUserInterval = window.setInterval(fetchOtherUser, 5000)
       return () => {
         window.clearInterval(pollInterval)
+        window.clearInterval(otherUserInterval)
       }
     }
     setMentionMenu(null)
@@ -531,7 +671,7 @@ function App() {
           setAiConversation(msgs.map(m => ({
             role: (m.sender === 'me' ? 'user' : 'ai') as 'user' | 'ai',
             text: m.text,
-            time: m.time
+            time: formatTime(m.time, settings.timeFormat)
           })))
           initialMsgCount.current = msgs.length
         }).catch(() => {}).finally(() => setOpusMessagesLoading(false))
@@ -842,16 +982,6 @@ function App() {
     }).catch(err => alert(err.message))
   }
 
-  const handleLeaveGroup = () => {
-    if (!activeChatId || !user) return
-    api(`/chats/${activeChatId}/participants/${user.id}`, { method: 'DELETE' }).then(() => {
-      setChats(prev => prev.filter(c => c.id !== activeChatId))
-      setActiveChatId(null)
-      setActiveTab('home')
-      setMessages([])
-    }).catch(err => alert(err.message))
-  }
-
   const handleGroupAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>, chatId: number) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -913,7 +1043,7 @@ function App() {
   const handleAiSend = async () => {
     const text = inputText.trim()
     if (!text || aiLoading) return
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const now = formatTime(new Date(), settings.timeFormat)
     setInputText('')
     setAiConversation(prev => [...prev, { role: 'user', text, time: now }])
     setAiLoading(true)
@@ -923,9 +1053,9 @@ function App() {
         method: 'POST',
         body: JSON.stringify({ text, history: aiConversation, chatId: opusChatId })
       })
-      setAiConversation(prev => [...prev, { role: 'ai', text: result.response, time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }])
+      setAiConversation(prev => [...prev, { role: 'ai', text: result.response, time: formatTime(new Date(), settings.timeFormat) }])
     } catch {
-      setAiConversation(prev => [...prev, { role: 'ai', text: 'Произошла ошибка. Попробуйте ещё раз.', time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }])
+      setAiConversation(prev => [...prev, { role: 'ai', text: 'Произошла ошибка. Попробуйте ещё раз.', time: formatTime(new Date(), settings.timeFormat) }])
     } finally {
       setAiLoading(false)
     }
@@ -1049,11 +1179,40 @@ function App() {
     setTimeout(() => { setToast(null); setToastClosing(false) }, 1500)
   }
 
+  const showToast = (message: string) => {
+    setToastClosing(false)
+    setToast(message)
+    setTimeout(() => setToastClosing(true), 1200)
+    setTimeout(() => { setToast(null); setToastClosing(false) }, 1500)
+  }
+
   const replyMessage = () => {
     if (!contextMenu) return
     const msg = messages.find(m => m.id === contextMenu.messageId)
     if (msg) setReplyTo({ messageId: msg.id, text: msg.text, attachmentUrl: msg.attachmentUrl, attachmentType: msg.attachmentType })
     closeContextMenu()
+  }
+
+  const forwardMessageAction = () => {
+    if (!contextMenu) return
+    const msg = messages.find(m => m.id === contextMenu.messageId)
+    if (msg) openForwardPicker(msg)
+    closeContextMenu()
+  }
+
+  const handleForwardSend = (chatId: number) => {
+    if (!forwardMessage) return
+    const body: any = {
+      text: forwardMessage.text,
+      attachmentUrl: forwardMessage.attachmentUrl,
+      attachmentType: forwardMessage.attachmentType,
+      forwardFrom: forwardMessage.forwardFromId
+        ? { id: forwardMessage.forwardFromId, name: forwardMessage.forwardFromName }
+        : { id: forwardMessage.senderId, name: forwardMessage.senderName }
+    }
+    api(`/chats/${chatId}/messages`, { method: 'POST', body: JSON.stringify(body) }).then(() => {
+      closeForwardPicker()
+    }).catch(err => alert(err.message))
   }
 
   const deleteMessage = (forBoth: boolean) => {
@@ -1072,7 +1231,57 @@ function App() {
     if (!chatContextMenu) return
     api(`/chats/${chatContextMenu.chatId}`, { method: 'DELETE' }).then(() => {
       setChats(prev => prev.filter(c => c.id !== chatContextMenu.chatId))
-      setChatContextMenu(null)
+      closeChatContextMenu()
+    }).catch(err => alert(err.message))
+  }
+
+  const handleDeleteGroup = (chatId: number) => {
+    const chat = chats.find(c => c.id === chatId)
+    if (!chat) return
+    openConfirm(
+      t('deleteGroup', settings.language),
+      t('deleteGroupConfirm', settings.language).replace('%s', chat.name),
+      () => {
+        api(`/chats/${chatId}`, { method: 'DELETE' }).then(() => {
+          setChats(prev => prev.filter(c => c.id !== chatId))
+          if (activeChatId === chatId) {
+            setActiveChatId(null)
+            setActiveTab('home')
+          }
+          closeGroupMoreMenu()
+        }).catch(err => alert(err.message))
+      }
+    )
+  }
+
+  const handleLeaveGroup = (chatId: number) => {
+    const chat = chats.find(c => c.id === chatId)
+    if (!chat) return
+    openConfirm(
+      t('leaveGroup', settings.language),
+      t('leaveGroupConfirm', settings.language).replace('%s', chat.name),
+      () => {
+        api(`/chats/${chatId}/participants/${user?.id}`, { method: 'DELETE' }).then(() => {
+          setChats(prev => prev.filter(c => c.id !== chatId))
+          if (activeChatId === chatId) {
+            setActiveChatId(null)
+            setActiveTab('home')
+          }
+          closeGroupMoreMenu()
+        }).catch(err => alert(err.message))
+      }
+    )
+  }
+
+  const handleDeleteContactChat = (chatId: number) => {
+    api(`/chats/${chatId}`, { method: 'DELETE' }).then(() => {
+      setChats(prev => prev.filter(c => c.id !== chatId))
+      if (activeChatId === chatId) {
+        setActiveChatId(null)
+        setActiveTab('home')
+        setContactProfile(null)
+      }
+      closeContactMoreMenu()
     }).catch(err => alert(err.message))
   }
 
@@ -1082,15 +1291,15 @@ function App() {
     const newPinned = !chat.pinned
     api(`/chats/${chatId}/pin`, { method: 'PUT', body: JSON.stringify({ pinned: newPinned }) }).then(() => {
       setChats(prev => prev.map(c => c.id === chatId ? { ...c, pinned: newPinned } : c).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)))
-      setChatContextMenu(null)
+      closeChatContextMenu()
     }).catch(err => alert(err.message))
   }
 
   const addChatToFolder = (chatId: number, folderId: number) => {
     api(`/folders/${folderId}/chats/${chatId}`, { method: 'POST' }).then(() => {
       setFolders(prev => prev.map(f => f.id === folderId ? { ...f, chats: [...f.chats, chatId] } : f))
-      setFolderDropdown(null)
-      setChatContextMenu(null)
+      closeFolderDropdown()
+      closeChatContextMenu()
     }).catch(err => alert(err.message))
   }
 
@@ -1118,7 +1327,6 @@ function App() {
     api(`/folders/${folderId}`, { method: 'DELETE' }).then(() => {
       setFolders(prev => prev.filter(f => f.id !== folderId))
       if (activeFolderId === folderId) setActiveFolderId(null)
-      if (efSelectedFolderId === folderId) setEfSelectedFolderId(null)
       closeDeleteFolderConfirm()
     }).catch(err => alert(err.message))
   }
@@ -1141,17 +1349,70 @@ function App() {
 
   const cancelEfRename = () => setEfRenamingId(null)
 
-  const closeAttachMenu = () => setAttachMenu(null)
-  const closeProfileMenu = () => setProfileMenu(null)
-  const closeChatContextMenu = () => setChatContextMenu(null)
-  const closeFolderDropdown = () => setFolderDropdown(null)
-  const closeChatMenu = () => setChatMenu(null)
+  const closeAttachMenu = useCallback(() => {
+    if (!attachMenu || attachMenuClosing) return
+    setAttachMenuClosing(true)
+    setTimeout(() => {
+      setAttachMenu(null)
+      setAttachMenuClosing(false)
+    }, 220)
+  }, [attachMenu, attachMenuClosing])
+  const closeProfileMenu = useCallback(() => {
+    if (!profileMenu || profileMenuClosing) return
+    setProfileMenuClosing(true)
+    setTimeout(() => {
+      setProfileMenu(null)
+      setProfileMenuClosing(false)
+    }, 220)
+  }, [profileMenu, profileMenuClosing])
+  const closeChatContextMenu = useCallback(() => {
+    if (!chatContextMenu && !chatContextMenuClosing) return
+    setChatContextMenuClosing(true)
+    setTimeout(() => {
+      setChatContextMenu(null)
+      setChatContextMenuClosing(false)
+    }, 220)
+  }, [chatContextMenu, chatContextMenuClosing])
+  const closeFolderDropdown = useCallback(() => {
+    if (!folderDropdown && !folderDropdownClosing) return
+    setFolderDropdownClosing(true)
+    setTimeout(() => {
+      setFolderDropdown(null)
+      setFolderDropdownClosing(false)
+    }, 220)
+  }, [folderDropdown, folderDropdownClosing])
+  const closeChatMenu = useCallback(() => {
+    if (!chatMenu || chatMenuClosing) return
+    setChatMenuClosing(true)
+    setTimeout(() => {
+      setChatMenu(null)
+      setChatMenuClosing(false)
+      setClearChatSubmenu(false)
+    }, 220)
+  }, [chatMenu, chatMenuClosing])
   const closeMemberMenu = () => setMemberMenu(null)
+  const closeGroupMoreMenu = useCallback(() => {
+    if (!groupMoreMenu && !groupMoreMenuClosing) return
+    setGroupMoreMenuClosing(true)
+    setTimeout(() => { setGroupMoreMenu(null); setGroupMoreMenuClosing(false) }, 220)
+  }, [groupMoreMenu, groupMoreMenuClosing])
+  const closeContactMoreMenu = useCallback(() => {
+    if (!contactMoreMenu && !contactMoreMenuClosing) return
+    setContactMoreMenuClosing(true)
+    setTimeout(() => { setContactMoreMenu(null); setContactMoreMenuClosing(false) }, 220)
+  }, [contactMoreMenu, contactMoreMenuClosing])
   const closeFolderContextMenu = () => setFolderContextMenu(null)
-  const closeNewChatCtxMenu = () => setNewChatCtxMenu(null)
+  const closeNewChatCtxMenu = useCallback(() => {
+    if (!newChatCtxMenu && !newChatCtxMenuClosing) return
+    setNewChatCtxMenuClosing(true)
+    setTimeout(() => {
+      setNewChatCtxMenu(null)
+      setNewChatCtxMenuClosing(false)
+    }, 220)
+  }, [newChatCtxMenu, newChatCtxMenuClosing])
 
   const handleClearActiveChat = () => {
-    setNewChatCtxMenu(null)
+    closeNewChatCtxMenu()
     if (activeTab === 'home') {
       const opusChatId = chats.find(c => c.name === 'Opus')?.id
       if (opusChatId) api(`/chats/${opusChatId}/messages`, { method: 'DELETE' }).catch(() => {})
@@ -1165,24 +1426,28 @@ function App() {
   const settingOptions: Record<string, string[]> = {
     lastSeen: ['Everyone', 'My Contacts', 'Nobody'],
     profilePhoto: ['Everyone', 'My Contacts', 'Nobody'],
+    addToGroup: ['Everyone', 'My Contacts', 'Nobody'],
     phonePrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     emailPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     bioPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     autoDownload: ['Wi-Fi only', 'Always', 'Never'],
     language: ['English', 'Russian'],
+    theme: ['Dark', 'Light'],
+    timeFormat: ['24h', '12h'],
   }
 
-  const cycleSetting = (key: keyof typeof settings, options: string[]) => {
-    setSettings(prev => {
-      const idx = options.indexOf(prev[key])
-      return { ...prev, [key]: options[(idx + 1) % options.length] }
+  const cycleSetting = (key: keyof typeof defaultSettings, options: string[]) => {
+    setSettings((prev: typeof defaultSettings) => {
+      const current = prev[key] as string
+      const idx = options.indexOf(current)
+      return { ...prev, [key]: options[(idx + 1) % options.length] } as typeof prev
     })
   }
 
   const selectSetting = (key: string, value: string) => {
-    setSettings(prev => {
+    setSettings((prev: typeof defaultSettings) => {
       const next = { ...prev, [key as keyof typeof prev]: value }
-      if (key === 'phonePrivacy' || key === 'emailPrivacy' || key === 'bioPrivacy' || key === 'profilePhoto' || key === 'lastSeen') {
+      if (key === 'phonePrivacy' || key === 'emailPrivacy' || key === 'bioPrivacy' || key === 'profilePhoto' || key === 'lastSeen' || key === 'addToGroup') {
         api('/users/me/privacy', {
           method: 'PUT',
           body: JSON.stringify({
@@ -1191,6 +1456,7 @@ function App() {
             bio: next.bioPrivacy,
             profilePhoto: next.profilePhoto,
             lastSeen: next.lastSeen,
+            addToGroup: next.addToGroup,
           })
         }).catch(console.error)
       }
@@ -1200,9 +1466,9 @@ function App() {
   }
 
   useEffect(() => {
-    const handleClick = () => { closeContextMenu(); closeAiContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeNewChatCtxMenu(); closeSettingDropdown(); closeChatMenu(); closeMemberMenu(); setClearChatSubmenu(false); setFolderEditOpen(false); setPollModalOpen(false) }
-    const handleScroll = () => { closeContextMenu(); closeAiContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeNewChatCtxMenu(); closeSettingDropdown(); closeChatMenu(); closeMemberMenu(); setClearChatSubmenu(false); setFolderEditOpen(false); setPollModalOpen(false) }
-    if (contextMenu || aiContextMenu || attachMenu || profileMenu || chatContextMenu || folderDropdown || folderContextMenu || newChatCtxMenu || folderEditOpen || settingDropdown || chatMenu || memberMenu || clearChatSubmenu || pollModalOpen) {
+    const handleClick = () => { closeContextMenu(); closeAiContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeNewChatCtxMenu(); closeSettingDropdown(); closeChatMenu(); closeMemberMenu(); closeGroupMoreMenu(); closeContactMoreMenu(); setClearChatSubmenu(false); closeFolderEdit(); setPollModalOpen(false); closeSearchPanel(); closeForwardPicker() }
+    const handleScroll = () => { closeContextMenu(); closeAiContextMenu(); closeAttachMenu(); closeProfileMenu(); closeChatContextMenu(); closeFolderDropdown(); closeFolderContextMenu(); closeNewChatCtxMenu(); closeSettingDropdown(); closeChatMenu(); closeMemberMenu(); closeGroupMoreMenu(); closeContactMoreMenu(); setClearChatSubmenu(false); closeFolderEdit(); setPollModalOpen(false); closeSearchPanel(); closeForwardPicker() }
+    if (contextMenu || aiContextMenu || attachMenu || attachMenuClosing || profileMenu || profileMenuClosing || chatContextMenu || chatContextMenuClosing || folderDropdown || folderDropdownClosing || folderContextMenu || newChatCtxMenu || newChatCtxMenuClosing || folderEditOpen || folderEditClosing || settingDropdown || chatMenu || chatMenuClosing || memberMenu || groupMoreMenu || groupMoreMenuClosing || contactMoreMenu || contactMoreMenuClosing || clearChatSubmenu || pollModalOpen || searchPanelOpen || searchPanelClosing || forwardPickerOpen || forwardPickerClosing) {
       document.addEventListener('click', handleClick)
       document.addEventListener('scroll', handleScroll, true)
     }
@@ -1210,7 +1476,7 @@ function App() {
       document.removeEventListener('click', handleClick)
       document.removeEventListener('scroll', handleScroll, true)
     }
-  }, [contextMenu, aiContextMenu, attachMenu, profileMenu, chatContextMenu, folderDropdown, folderContextMenu, newChatCtxMenu, folderEditOpen, settingDropdown, chatMenu, clearChatSubmenu, pollModalOpen])
+  }, [contextMenu, aiContextMenu, attachMenu, attachMenuClosing, profileMenu, profileMenuClosing, chatContextMenu, chatContextMenuClosing, folderDropdown, folderDropdownClosing, folderContextMenu, newChatCtxMenu, newChatCtxMenuClosing, folderEditOpen, folderEditClosing, settingDropdown, chatMenu, chatMenuClosing, memberMenu, groupMoreMenu, groupMoreMenuClosing, contactMoreMenu, contactMoreMenuClosing, clearChatSubmenu, pollModalOpen, searchPanelOpen, searchPanelClosing, forwardPickerOpen, forwardPickerClosing])
 
   useEffect(() => {
     if (!fullscreenImage) return
@@ -1220,10 +1486,149 @@ function App() {
   }, [fullscreenImage])
 
   useEffect(() => {
+    if (!searchPanelOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeSearchPanel() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [searchPanelOpen, closeSearchPanel])
+
+  useEffect(() => {
+    if (!forwardPickerOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeForwardPicker() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [forwardPickerOpen, closeForwardPicker])
+
+  useEffect(() => {
     if (!addMemberDialogOpen) return
     const t = setTimeout(() => groupInfoAddInputRef.current?.focus(), 100)
     return () => clearTimeout(t)
   }, [addMemberDialogOpen])
+
+  useEffect(() => {
+    if (!groupEditDialogOpen) return
+    const t = setTimeout(() => groupEditInputRef.current?.focus(), 100)
+    return () => clearTimeout(t)
+  }, [groupEditDialogOpen])
+
+  const closeGroupEditDialog = useCallback(() => {
+    setGroupEditDialogClosing(true)
+    setTimeout(() => {
+      setGroupEditDialogOpen(false)
+      setGroupEditDialogClosing(false)
+    }, 220)
+  }, [])
+
+  const closeAddMemberDialog = useCallback(() => {
+    setAddMemberDialogClosing(true)
+    setTimeout(() => {
+      setAddMemberDialogOpen(false)
+      setAddMemberDialogClosing(false)
+    }, 220)
+  }, [])
+
+  const openInviteLinkDialog = useCallback(() => {
+    if (!activeChatId) return
+    setInviteLinkDialogOpen(true)
+    setInviteLinkLoading(true)
+    api(`/chats/${activeChatId}/invite-link`, { method: 'POST' })
+      .then((res: any) => setInviteLinkCode(res.code))
+      .catch(() => setInviteLinkCode(null))
+      .finally(() => setInviteLinkLoading(false))
+  }, [activeChatId])
+
+  const closeInviteLinkDialog = useCallback(() => {
+    setInviteLinkDialogClosing(true)
+    setTimeout(() => {
+      setInviteLinkDialogOpen(false)
+      setInviteLinkDialogClosing(false)
+      setInviteLinkCode(null)
+    }, 220)
+  }, [])
+
+  const closeInviteJoinDialog = useCallback(() => {
+    setInviteJoinDialogClosing(true)
+    setTimeout(() => {
+      setInviteJoinDialogOpen(false)
+      setInviteJoinDialogClosing(false)
+      setInviteJoinCode(null)
+      setInviteJoinPreview(null)
+      setInviteJoinError(null)
+    }, 220)
+  }, [])
+
+  const openConfirm = useCallback((title: string, message: string | undefined, onConfirm: () => void) => {
+    setConfirmDialog({ title, message, onConfirm })
+    setConfirmDialogClosing(false)
+  }, [])
+
+  const closeConfirm = useCallback(() => {
+    setConfirmDialogClosing(true)
+    setTimeout(() => {
+      setConfirmDialog(null)
+      setConfirmDialogClosing(false)
+    }, 220)
+  }, [])
+
+  const handleAcceptInvite = () => {
+    if (!inviteJoinCode) return
+    setInviteJoinLoading(true)
+    api(`/chats/join/${inviteJoinCode}`, { method: 'POST' })
+      .then((chat: Chat) => {
+        setChats(prev => [chat, ...prev])
+        setActiveChatId(chat.id)
+        setActiveTab('chat')
+        closeInviteJoinDialog()
+      })
+      .catch((err: any) => setInviteJoinError(err.message || 'Failed to join'))
+      .finally(() => setInviteJoinLoading(false))
+  }
+
+  const isContact = useCallback((userId?: number) => userId ? contacts.some(c => c.id === userId) : false, [contacts])
+  const isBlocked = useCallback((userId?: number) => userId ? blockedUsers.some(b => b.id === userId) : false, [blockedUsers])
+
+  const addContact = useCallback(async (userId: number) => {
+    await api('/users/contacts', { method: 'POST', body: JSON.stringify({ userId }) })
+    const u = (viewedUser || contactProfile)
+    if (u && u.id === userId && !contacts.some(c => c.id === userId)) {
+      setContacts(prev => [...prev, u])
+    }
+  }, [contacts, viewedUser, contactProfile])
+
+  const removeContact = useCallback(async (userId: number) => {
+    await api(`/users/contacts/${userId}`, { method: 'DELETE' })
+    setContacts(prev => prev.filter(c => c.id !== userId))
+  }, [])
+
+  const blockUser = useCallback(async (userId: number) => {
+    await api('/users/block', { method: 'POST', body: JSON.stringify({ userId }) })
+    const u = (viewedUser || contactProfile)
+    if (u && u.id === userId && !blockedUsers.some(b => b.id === userId)) {
+      setBlockedUsers(prev => [...prev, u])
+      setContacts(prev => prev.filter(c => c.id !== userId))
+    }
+    setChats(prev => prev.map(c => c.participantId === userId ? { ...c, blocked: true } : c))
+  }, [blockedUsers, viewedUser, contactProfile])
+
+  const unblockUser = useCallback(async (userId: number) => {
+    await api(`/users/block/${userId}`, { method: 'DELETE' })
+    setBlockedUsers(prev => prev.filter(b => b.id !== userId))
+    setChats(prev => prev.map(c => c.participantId === userId ? { ...c, blocked: false } : c))
+  }, [])
+
+  const confirmContactAction = useCallback(() => {
+    if (!contactConfirm) return
+    const { action, userId } = contactConfirm
+    if (action === 'add') {
+      addContact(userId).then(closeContactConfirm).catch(err => alert(err.message))
+    } else if (action === 'delete') {
+      removeContact(userId).then(closeContactConfirm).catch(err => alert(err.message))
+    } else if (action === 'block') {
+      blockUser(userId).then(closeContactConfirm).catch(err => alert(err.message))
+    } else if (action === 'unblock') {
+      unblockUser(userId).then(closeContactConfirm).catch(err => alert(err.message))
+    }
+  }, [contactConfirm, addContact, removeContact, blockUser, unblockUser, closeContactConfirm])
 
   useEffect(() => {
     if (!avatarOpen) return
@@ -1459,27 +1864,27 @@ function App() {
         <div className="sidebar-profile-footer">
           <div className="profile-footer-content" onClick={(e) => {
             e.stopPropagation()
-            if (profileMenu) { closeProfileMenu(); return }
+            if (profileMenu || profileMenuClosing) { closeProfileMenu(); return }
             const el = avatarRef.current
             if (!el) return
             const r = el.getBoundingClientRect()
-            setProfileMenu({ x: r.left - 10, y: Math.max(8, r.top - 130) })
+            setProfileMenu({ x: r.left - 10, y: Math.max(8, r.top - 124) })
           }}>
             <div className="sidebar-avatar" title={t('profile', settings.language)} ref={avatarRef} style={user?.avatar ? { backgroundImage: `url(${user.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
               {!user?.avatar && <User size={18} strokeWidth={1.5} />}
             </div>
             <span className="profile-username">{user?.name || t('profile', settings.language)}</span>
           </div>
-          {profileMenu && (
-            <div className="context-menu" style={{ position: 'fixed', left: profileMenu.x, top: profileMenu.y, zIndex: 300 }} onClick={(e) => e.stopPropagation()}>
+          {(profileMenu || profileMenuClosing) && (
+            <div className={`context-menu profile-menu-context${profileMenuClosing ? ' closing' : ''}`} style={{ position: 'fixed', left: profileMenu?.x, top: profileMenu?.y, zIndex: 300 }} onClick={(e) => e.stopPropagation()}>
               <button className="context-menu-item" onClick={() => { setActiveTab('profile'); setActiveChatId(null); closeProfileMenu() }}>
-                <User size={14} /><span>{t('profile', settings.language)}</span>
+                <User size={16} /><span>{t('profile', settings.language)}</span>
               </button>
               <button className="context-menu-item" onClick={() => { setActiveTab('settings'); closeProfileMenu() }}>
-                <Settings size={14} /><span>{t('settings', settings.language)}</span>
+                <Settings size={16} /><span>{t('settings', settings.language)}</span>
               </button>
               <button className="context-menu-item" onClick={() => { localStorage.removeItem('token'); localStorage.removeItem('e2e_user_id'); e2e.clearCache(); setToken(null); setUser(null); setIsLoggedIn(false); closeProfileMenu() }}>
-                <LogOut size={14} /><span>{t('logOut', settings.language)}</span>
+                <LogOut size={16} /><span>{t('logOut', settings.language)}</span>
               </button>
             </div>
           )}
@@ -1500,16 +1905,16 @@ function App() {
           e.target.value = ''
         }} />
 
-        {attachMenu && (
-          <div className="context-menu" style={{ left: attachMenu.x, top: attachMenu.y }} onClick={(e) => e.stopPropagation()}>
+        {(attachMenu || attachMenuClosing) && (
+          <div className={`context-menu attach-menu-context${attachMenuClosing ? ' closing' : ''}`} style={{ left: attachMenu?.x, bottom: attachMenu?.y }} onClick={(e) => e.stopPropagation()}>
             <button className="context-menu-item" onClick={() => { fileInputRef.current?.click(); closeAttachMenu() }}>
-              <Image size={14} /><span>{t('photoOrVideo', settings.language)}</span>
+              <Image size={16} /><span>{t('photoOrVideo', settings.language)}</span>
             </button>
             <button className="context-menu-item" onClick={() => { fileInputRef.current?.click(); closeAttachMenu() }}>
-              <File size={14} /><span>{t('document', settings.language)}</span>
+              <File size={16} /><span>{t('document', settings.language)}</span>
             </button>
             <button className="context-menu-item" onClick={() => { closeAttachMenu(); setPollModalOpen(true) }}>
-              <BarChart3 size={14} /><span>{t('poll', settings.language)}</span>
+              <BarChart3 size={16} /><span>{t('poll', settings.language)}</span>
             </button>
           </div>
         )}
@@ -1621,31 +2026,36 @@ function App() {
                   {activeChat.isGroup ? (
                     <div className="chat-header-status">{activeChat.participantCount || 0} members</div>
                   ) : (() => {
-                    const lastSeen = (contactProfile || activeChat)?.lastSeen
+                    const lastSeen = contactProfile?.lastSeen ?? activeChat?.participantLastSeen
                     const online = contactProfile?.online ?? activeChat?.participantOnline
-                    const text = formatLastSeen(lastSeen, online, settings.language)
-                    return text ? <div className={`chat-header-status${online ? ' online' : ''}`}>{text}</div> : null
+                    const text = activeChat?.blocked
+                      ? t('wasLongAgo', settings.language)
+                      : (!online && !lastSeen ? t('wasRecently', settings.language) : formatLastSeen(lastSeen, online, settings.language))
+                    return <div className={`chat-header-status${online && !activeChat?.blocked ? ' online' : ''}`}>{text || <span style={{ visibility: 'hidden' }}>&nbsp;</span>}</div>
                   })()}
                 </div>
               </div>
               <div className="chat-header-actions">
                 <button className="chat-header-action-btn" title={t('more', settings.language)} onClick={(e) => {
                   e.stopPropagation()
-                  if (chatMenu) { closeChatMenu(); setClearChatSubmenu(false); return }
+                  if (chatMenu || chatMenuClosing) { closeChatMenu(); return }
                   const rect = e.currentTarget.getBoundingClientRect()
                   setChatMenu({ x: rect.right, y: rect.bottom + 8 })
                 }}><MoreVertical size={18} /></button>
               </div>
             </div>
 
-            {chatMenu && (
-              <div className="context-menu" style={{ right: window.innerWidth - chatMenu.x, top: chatMenu.y }} onClick={(e) => e.stopPropagation()}>
+            {(chatMenu || chatMenuClosing) && (
+              <div className={`context-menu chat-menu-context${chatMenuClosing ? ' closing' : ''}`} style={{ right: window.innerWidth - (chatMenu?.x || 0), top: chatMenu?.y }} onClick={(e) => e.stopPropagation()}>
                 {!clearChatSubmenu ? (
-                  <button className="context-menu-item" onClick={() => setClearChatSubmenu(true)}><Trash2 size={14} /><span>{t('clearChat', settings.language)}</span></button>
+                  <>
+                    <button className="context-menu-item" onClick={() => { openSearchPanel(); closeChatMenu(); }}><Search size={16} /><span>{t('searchMessages', settings.language)}</span></button>
+                    <button className="context-menu-item" onClick={() => setClearChatSubmenu(true)}><Trash2 size={16} /><span>{t('clearChat', settings.language)}</span></button>
+                  </>
                 ) : (
                   <>
-                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, false); setClearChatSubmenu(false) }}><User size={14} /><span>{t('clearForMe', settings.language)}</span></button>
-                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, true); setClearChatSubmenu(false) }}><Users size={14} /><span>{t('clearForEveryone', settings.language)}</span></button>
+                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, false); setClearChatSubmenu(false) }}><User size={16} /><span>{t('clearForMe', settings.language)}</span></button>
+                    <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, true); setClearChatSubmenu(false) }}><Users size={16} /><span>{t('clearForEveryone', settings.language)}</span></button>
                   </>
                 )}
               </div>
@@ -1708,9 +2118,15 @@ function App() {
                           })()}
                         </div>
                       )}
+                      {msg.forwardFromName && (
+                        <div className="message-forward-badge">
+                          <Forward size={12} />
+                          <span>{t('forwardedFrom', settings.language)} {msg.forwardFromName}</span>
+                        </div>
+                      )}
                       {msg.text && <div className="message-text">{renderMessageText(msg.text)}</div>}
                       <div className="message-meta">
-                        <span className="message-time">{msg.time}</span>
+                        <span className="message-time">{formatTime(msg.time, settings.timeFormat)}</span>
                         {msg.sender === 'me' && <MessageStatusIcon status={msg.status} />}
                       </div>
                     </div>
@@ -1732,6 +2148,7 @@ function App() {
                 {!deleteMessageSubmenu ? (
                   <>
                     <button className="context-menu-item" onClick={replyMessage}><Reply size={14} /><span>{t('reply', settings.language)}</span></button>
+                    <button className="context-menu-item" onClick={forwardMessageAction}><Forward size={14} /><span>{t('forward', settings.language)}</span></button>
                     <button className="context-menu-item" onClick={copyMessage}><Copy size={14} /><span>{t('copy', settings.language)}</span></button>
                     <button className="context-menu-item context-menu-item-danger" onClick={() => setDeleteMessageSubmenu(true)}><Trash2 size={14} /><span>{t('delete', settings.language)}</span></button>
                   </>
@@ -1759,7 +2176,7 @@ function App() {
               )}
               {mentionMenu?.chatId === activeChat.id && (
                 <div className="mention-menu">
-                  {contacts
+                  {mentionableUsers
                     .filter(c => {
                       const q = mentionMenu.query
                       return c.username?.toLowerCase().includes(q) ||
@@ -1803,25 +2220,120 @@ function App() {
               <div className="chat-input-wrapper">
                 <button className="input-icon-btn" title={t('addFile', settings.language)} onClick={(e) => {
                   e.stopPropagation()
-                  if (attachMenu) { closeAttachMenu(); return }
+                  if (attachMenu || attachMenuClosing) { closeAttachMenu(); return }
                   const rect = e.currentTarget.getBoundingClientRect()
-                  setAttachMenu({ x: rect.left, y: rect.top - 90, dir: 'up' })
-                }}>
+                  setAttachMenu({ x: rect.left, y: window.innerHeight - rect.bottom, dir: 'up' })
+                }} disabled={activeChat.blocked}>
                   <Plus size={18} />
                 </button>
                 <input
                   ref={el => void (chatInputRefs.current[activeChat.id] = el)}
-                  type="text" className="chat-input" placeholder={t('writeMessage', settings.language)}
+                  type="text" className="chat-input" placeholder={activeChat.blocked ? t('blockedInputPlaceholder', settings.language) : t('writeMessage', settings.language)}
                   value={chatInputTexts[activeChat.id] || ''}
                   onChange={(e) => handleChatInputChange(activeChat.id, e.target.value)}
                   onPaste={handleChatPaste}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(activeChat.id) }} />
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(activeChat.id) }}
+                  disabled={activeChat.blocked} />
                 <button className={`send-btn${(chatInputTexts[activeChat.id] || '').trim() || pendingAttachments.length > 0 ? ' active' : ''}`} title={t('send', settings.language)}
-                  onClick={() => handleSendMessage(activeChat.id)}>
+                  onClick={() => handleSendMessage(activeChat.id)} disabled={activeChat.blocked}>
                   <ArrowUp size={18} />
                 </button>
               </div>
             </div>
+            {(searchPanelOpen || searchPanelClosing) && (
+              <div className={`search-panel-overlay${searchPanelClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+                <div className="search-panel">
+                  <div className="search-panel-header">
+                    <Search size={18} className="search-panel-icon" />
+                    <input
+                      ref={searchMessagesInputRef}
+                      type="text"
+                      className="search-panel-input"
+                      placeholder={t('searchMessagesPlaceholder', settings.language)}
+                      value={searchMessagesQuery}
+                      onChange={(e) => setSearchMessagesQuery(e.target.value)}
+                    />
+                    <button className="search-panel-close" onClick={closeSearchPanel}><X size={18} /></button>
+                  </div>
+                  <div className="search-panel-results">
+                    {searchMessagesQuery.trim() ? (
+                      messages.filter(m => m.text.toLowerCase().includes(searchMessagesQuery.toLowerCase())).length > 0 ? (
+                        messages.filter(m => m.text.toLowerCase().includes(searchMessagesQuery.toLowerCase())).map(m => (
+                          <div key={m.id} className="search-result-item" onClick={() => {
+                            const el = document.getElementById(`msg-${m.id}`)
+                            if (el) {
+                              el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                              el.classList.add('search-highlight')
+                              setTimeout(() => el.classList.remove('search-highlight'), 2000)
+                            }
+                            closeSearchPanel()
+                          }}>
+                            <div className="search-result-text">
+                              {(() => {
+                                const text = m.text
+                                const query = searchMessagesQuery.toLowerCase()
+                                const idx = text.toLowerCase().indexOf(query)
+                                if (idx === -1) return text
+                                return (
+                                  <>
+                                    {text.slice(0, idx)}
+                                    <span className="search-highlight-text">{text.slice(idx, idx + query.length)}</span>
+                                    {text.slice(idx + query.length)}
+                                  </>
+                                )
+                              })()}
+                            </div>
+                            <div className="search-result-time">{formatTime(m.time, settings.timeFormat)}</div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="search-panel-empty">{t('noMessagesFound', settings.language)}</div>
+                      )
+                    ) : (
+                      <div className="search-panel-empty">{t('searchInChat', settings.language)}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {(forwardPickerOpen || forwardPickerClosing) && (
+              <div className={`forward-picker-overlay${forwardPickerClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+                <div className="forward-picker">
+                  <div className="forward-picker-header">
+                    <div className="forward-picker-title">{t('forwardTo', settings.language)}</div>
+                    <button className="forward-picker-close" onClick={closeForwardPicker}><X size={18} /></button>
+                  </div>
+                  <div className="forward-picker-search-wrapper">
+                    <Search size={16} className="forward-picker-search-icon" />
+                    <input
+                      type="text"
+                      className="forward-picker-search-input"
+                      placeholder={t('search', settings.language)}
+                      value={forwardSearchQuery}
+                      onChange={(e) => setForwardSearchQuery(e.target.value)}
+                    />
+                  </div>
+                  <div className="forward-picker-chats">
+                    {chats
+                      .filter(c => c.name.toLowerCase().includes(forwardSearchQuery.toLowerCase()))
+                      .map(chat => (
+                        <div key={chat.id} className="forward-picker-chat" onClick={() => handleForwardSend(chat.id)}>
+                          <div className="forward-picker-chat-avatar" style={chat.avatar || chat.participantAvatar ? { backgroundImage: `url(${chat.avatar || chat.participantAvatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                            {!chat.avatar && !chat.participantAvatar && (chat.isGroup ? <Users size={18} strokeWidth={1.5} /> : <User size={18} strokeWidth={1.5} />)}
+                          </div>
+                          <div className="forward-picker-chat-info">
+                            <div className="forward-picker-chat-name">{chat.name}</div>
+                            <div className="forward-picker-chat-meta">{chat.isGroup ? `${chat.participantCount || 0} ${t('members', settings.language)}` : (chat.participantOnline ? t('online', settings.language) : t('lastSeenRecently', settings.language))}</div>
+                          </div>
+                        </div>
+                      ))}
+                    {chats.filter(c => c.name.toLowerCase().includes(forwardSearchQuery.toLowerCase())).length === 0 && (
+                      <div className="forward-picker-empty">{t('noChats', settings.language)}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         ) : activeTab === 'group' && activeChat ? (
           <div className="profile-container">
@@ -1835,10 +2347,38 @@ function App() {
                 <div className="profile-name">{activeChat.name}</div>
               </div>
               {activeChat.role === 'admin' && (
-                <button className="profile-add-btn" onClick={() => { setGroupInfoAddQuery(''); setGroupInfoAddResults([]); setAddMemberDialogOpen(true) }}>
-                  <Plus size={16} />
-                  <span>{t('add', settings.language)}</span>
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+                  <button className="profile-add-btn wide" onClick={() => { setGroupInfoAddQuery(''); setGroupInfoAddResults([]); setAddMemberDialogOpen(true) }}>
+                    <Plus size={16} />
+                    <span>{t('add', settings.language)}</span>
+                  </button>
+                  <button className="profile-add-btn wide" onClick={() => { setGroupEditName(activeChat.name); setGroupEditDisableCopying(!!activeChat.disableCopying); setGroupEditDialogOpen(true) }}>
+                    <Pencil size={16} />
+                    <span>{t('edit', settings.language)}</span>
+                  </button>
+                  <button className="profile-add-btn wide" onClick={(e) => {
+                    e.stopPropagation()
+                    if (groupMoreMenu) { closeGroupMoreMenu(); return }
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    setGroupMoreMenu({ x: rect.left, y: rect.bottom + 8 })
+                  }}>
+                    <MoreVertical size={16} />
+                    <span>{t('more', settings.language)}</span>
+                  </button>
+                  {(groupMoreMenu || groupMoreMenuClosing) && (
+                    <div className={`context-menu attach-menu-context${groupMoreMenuClosing ? ' closing' : ''}`} style={{ left: groupMoreMenu?.x, top: groupMoreMenu?.y }} onClick={e => e.stopPropagation()}>
+                      {activeChat?.role === 'admin' ? (
+                        <button className="context-menu-item context-menu-item-danger" onClick={() => activeChat && handleDeleteGroup(activeChat.id)}>
+                          <Trash2 size={16} /><span>{t('deleteChat', settings.language)}</span>
+                        </button>
+                      ) : (
+                        <button className="context-menu-item context-menu-item-danger" onClick={() => activeChat && handleLeaveGroup(activeChat.id)}>
+                          <LogOut size={16} /><span>{t('leaveGroup', settings.language)}</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               )}
             </div>
             <div className="profile-content">
@@ -1995,6 +2535,51 @@ function App() {
                 <div className="profile-name">{(viewedUser || contactProfile)?.name ? `${(viewedUser || contactProfile)!.name} ${(viewedUser || contactProfile)!.surname || ''}` : activeChat?.name || ''}</div>
               </div>
               {(viewedUser || contactProfile)?.bio && <div className="profile-bio">{(viewedUser || contactProfile)?.bio}</div>}
+              {(() => {
+                const profileUser = viewedUser || contactProfile
+                const profileUserId = profileUser?.id
+                if (!profileUserId || profileUserId === user?.id) return null
+                const contact = isContact(profileUserId)
+                const blocked = isBlocked(profileUserId)
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+                    <button className="profile-add-btn wide" onClick={() => setContactConfirm({ action: contact ? 'delete' : 'add', userId: profileUserId, name: `${profileUser?.name || ''} ${profileUser?.surname || ''}`.trim() })}>
+                      {contact ? <UserMinus size={16} /> : <UserPlus size={16} />}
+                      <span>{contact ? t('deleteContact', settings.language) : t('addContact', settings.language)}</span>
+                    </button>
+                    <button className="profile-add-btn wide" onClick={() => setContactConfirm({ action: blocked ? 'unblock' : 'block', userId: profileUserId, name: `${profileUser?.name || ''} ${profileUser?.surname || ''}`.trim() })}>
+                      {blocked ? <ShieldOff size={16} /> : <Shield size={16} />}
+                      <span>{blocked ? t('unblock', settings.language) : t('block', settings.language)}</span>
+                    </button>
+                    {activeChat?.id && (
+                      <>
+                        <button className="profile-add-btn wide" onClick={(e) => {
+                          e.stopPropagation()
+                          if (contactMoreMenu) { closeContactMoreMenu(); return }
+                          const rect = e.currentTarget.getBoundingClientRect()
+                          setContactMoreMenu({ x: rect.left, y: rect.bottom + 8 })
+                        }}>
+                          <MoreVertical size={16} />
+                          <span>{t('more', settings.language)}</span>
+                        </button>
+                        {(contactMoreMenu || contactMoreMenuClosing) && (
+                          <div className={`context-menu attach-menu-context${contactMoreMenuClosing ? ' closing' : ''}`} style={{ left: contactMoreMenu?.x, top: contactMoreMenu?.y }} onClick={e => e.stopPropagation()}>
+                            {activeChat?.isGroup && activeChat?.role !== 'admin' ? (
+                              <button className="context-menu-item context-menu-item-danger" onClick={() => activeChat && handleLeaveGroup(activeChat.id)}>
+                                <LogOut size={16} /><span>{t('leaveGroup', settings.language)}</span>
+                              </button>
+                            ) : (
+                              <button className="context-menu-item context-menu-item-danger" onClick={() => activeChat && handleDeleteContactChat(activeChat.id)}>
+                                <Trash2 size={16} /><span>{t('deleteChat', settings.language)}</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
             <div className="profile-content">
               <div className="profile-section">
@@ -2012,6 +2597,9 @@ function App() {
               <button className={`settings-nav-btn ${settingsSection === 'general' ? 'active' : ''}`} onClick={() => setSettingsSection('general')}>
                 <Settings size={16} /><span>{t('general', settings.language)}</span>
               </button>
+              <button className={`settings-nav-btn ${settingsSection === 'appearance' ? 'active' : ''}`} onClick={() => setSettingsSection('appearance')}>
+                <Palette size={16} /><span>{t('appearance', settings.language)}</span>
+              </button>
               <button className={`settings-nav-btn ${settingsSection === 'account' ? 'active' : ''}`} onClick={() => setSettingsSection('account')}>
                 <User size={16} /><span>{t('account', settings.language)}</span>
               </button>
@@ -2023,7 +2611,7 @@ function App() {
               {settingsSection === 'general' && (
                 <>
                   <div className="profile-section">
-                    <h3 className="profile-section-title">{t('appearance', settings.language)}</h3>
+                    <h3 className="profile-section-title">{t('general', settings.language)}</h3>
                     <div className="profile-card">
                       <div className="profile-info-row" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'language', x: r.right - 180, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
                         <span className="profile-info-label">{t('language', settings.language)}</span><span className="profile-info-value">{langName(settings.language)}</span>
@@ -2041,9 +2629,34 @@ function App() {
                         <span className="profile-info-label">{t('sounds', settings.language)}</span>
                         <ToggleSwitch checked={settings.sounds === 'On'} onChange={() => cycleSetting('sounds', ['On', 'Off'])} />
                       </div>
+                      <div className="profile-info-row">
+                        <span className="profile-info-label">{t('pushNotifications', settings.language)}</span>
+                        <ToggleSwitch checked={settings.pushNotifications} onChange={async () => {
+                          const next = !settings.pushNotifications
+                          setSettings((prev: typeof defaultSettings) => ({ ...prev, pushNotifications: next }))
+                          if (next) {
+                            await registerPush()
+                          } else {
+                            await unregisterPush()
+                          }
+                        }} />
+                      </div>
                     </div>
                   </div>
                 </>
+              )}
+              {settingsSection === 'appearance' && (
+                <div className="profile-section">
+                  <h3 className="profile-section-title">{t('appearance', settings.language)}</h3>
+                  <div className="profile-card">
+                    <div className="profile-info-row" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'theme', x: r.right - 180, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
+                      <span className="profile-info-label">{t('theme', settings.language)}</span><span className="profile-info-value">{t(settings.theme.toLowerCase(), settings.language)}</span>
+                    </div>
+                    <div className="profile-info-row" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'timeFormat', x: r.right - 180, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
+                      <span className="profile-info-label">{t('timeFormat', settings.language)}</span><span className="profile-info-value">{t(settings.timeFormat === '12h' ? 'hour12' : 'hour24', settings.language)}</span>
+                    </div>
+                  </div>
+                </div>
               )}
               {settingsSection === 'account' && (
                 <div className="profile-section">
@@ -2064,6 +2677,9 @@ function App() {
                       </div>
                       <div className="profile-info-row" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'profilePhoto', x: r.right - 180, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
                         <span className="profile-info-label">{t('profilePhoto', settings.language)}</span><span className="profile-info-value">{p(settings.profilePhoto, settings.language)}</span>
+                      </div>
+                      <div className="profile-info-row" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'addToGroup', x: r.right - 180, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
+                        <span className="profile-info-label">{t('addToGroup', settings.language)}</span><span className="profile-info-value">{p(settings.addToGroup, settings.language)}</span>
                       </div>
                       <div className="profile-info-row" onClick={(e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setSettingDropdown({ key: 'phonePrivacy', x: r.right - 180, y: r.bottom }) }} style={{ cursor: 'pointer' }}>
                         <span className="profile-info-label">{t('phone', settings.language)}</span><span className="profile-info-value">{p(settings.phonePrivacy, settings.language)}</span>
@@ -2086,30 +2702,57 @@ function App() {
       </main>
     </div>
 
-    {chatContextMenu && (
-      <div className="context-menu" style={{ left: chatContextMenu.x, top: chatContextMenu.y }} onClick={(e) => e.stopPropagation()}>
-        <button className="context-menu-item" onClick={() => chatContextMenu && togglePinChat(chatContextMenu.chatId)}>
-          <Pin size={14} /><span>{chats.find(c => c.id === chatContextMenu.chatId)?.pinned ? t('unpin', settings.language) : t('pin', settings.language)}</span>
-        </button>
-        <button className="context-menu-item" onClick={() => chatContextMenu && setFolderDropdown({ chatId: chatContextMenu.chatId, x: chatContextMenu.x + 190, y: chatContextMenu.y })}>
-          <Folder size={14} /><span>{t('folder', settings.language)}</span>
-        </button>
-        <button className="context-menu-item context-menu-item-danger" onClick={deleteChat}><Trash2 size={14} /><span>{t('deleteChat', settings.language)}</span></button>
-      </div>
-    )}
+    {(() => {
+      const menu = chatContextMenu
+      if (!menu && !chatContextMenuClosing) return null
+      return (
+        <>
+          <div className={`context-menu-overlay${chatContextMenuClosing ? ' closing' : ''}`} onClick={closeChatContextMenu} />
+          <div className={`context-menu attach-menu-context${chatContextMenuClosing ? ' closing' : ''}`} style={{ left: menu?.x, top: menu?.y }} onClick={(e) => e.stopPropagation()}>
+            <button className="context-menu-item" onClick={() => menu && togglePinChat(menu.chatId)}>
+              <Pin size={16} /><span>{(menu ? chats.find(c => c.id === menu.chatId)?.pinned : false) ? t('unpin', settings.language) : t('pin', settings.language)}</span>
+            </button>
+            <button className="context-menu-item" onClick={() => menu && setFolderDropdown({ chatId: menu.chatId, x: menu.x + 210, y: menu.y })}>
+              <Folder size={16} /><span>{t('folder', settings.language)}</span>
+            </button>
+            <button className="context-menu-item context-menu-item-danger" onClick={() => {
+              if (!menu) return
+              const chat = chats.find(c => c.id === menu.chatId)
+              if (chat?.isGroup && chat?.role !== 'admin') {
+                handleLeaveGroup(menu.chatId)
+              } else {
+                deleteChat()
+              }
+            }}>
+              {(() => {
+                const chat = menu && chats.find(c => c.id === menu.chatId)
+                return chat?.isGroup && chat?.role !== 'admin' ? (
+                  <><LogOut size={16} /><span>{t('leaveGroup', settings.language)}</span></>
+                ) : (
+                  <><Trash2 size={16} /><span>{t('deleteChat', settings.language)}</span></>
+                )
+              })()}
+            </button>
+          </div>
+        </>
+      )
+    })()}
 
-    {folderDropdown && (
-      <div className="context-menu" style={{ left: folderDropdown.x, top: folderDropdown.y }} onClick={(e) => e.stopPropagation()}>
-        {folders.map(folder => (
-          <button key={folder.id} className="context-menu-item" onClick={() => addChatToFolder(folderDropdown.chatId, folder.id)}>
-            <span>{folder.name}</span>
-            {folder.chats.includes(folderDropdown.chatId) && <span style={{ marginLeft: 'auto', color: '#13B962' }}>✓</span>}
+    {(folderDropdown || folderDropdownClosing) && (
+      <>
+        <div className={`context-menu-overlay${folderDropdownClosing ? ' closing' : ''}`} onClick={closeFolderDropdown} />
+        <div className={`context-menu attach-menu-context${folderDropdownClosing ? ' closing' : ''}`} style={{ left: folderDropdown?.x, top: folderDropdown?.y }} onClick={(e) => e.stopPropagation()}>
+          {folders.map(folder => (
+            <button key={folder.id} className="context-menu-item" onClick={() => folderDropdown && addChatToFolder(folderDropdown.chatId, folder.id)}>
+              <span>{folder.name}</span>
+              {folderDropdown && folder.chats.includes(folderDropdown.chatId) && <span style={{ marginLeft: 'auto', color: '#13B962' }}>✓</span>}
+            </button>
+          ))}
+          <button className="context-menu-item" onClick={() => { closeFolderDropdown(); setNewFolderOpen(true) }}>
+            <Plus size={16} /><span>{t('newFolder', settings.language)}</span>
           </button>
-        ))}
-        <button className="context-menu-item" onClick={() => { setNewFolderOpen(true); setFolderDropdown(null) }}>
-          <Plus size={14} /><span>{t('newFolder', settings.language)}</span>
-        </button>
-      </div>
+        </div>
+      </>
     )}
 
     {folderContextMenu && (
@@ -2123,178 +2766,92 @@ function App() {
       </div>
     )}
 
-    {newChatCtxMenu && (
-      <div className="context-menu" style={{ left: newChatCtxMenu.x, top: newChatCtxMenu.y }} onClick={(e) => e.stopPropagation()}>
-        <button className="context-menu-item" onClick={() => { setNewChatCtxMenu(null); setCreateGroupOpen(true) }}>
-          <Users size={14} /><span>{t('newGroup', settings.language)}</span>
-        </button>
-        <button className="context-menu-item" onClick={() => { setNewChatCtxMenu(null); setFolderEditOpen(true) }}>
-          <Folder size={14} /><span>{t('editFolders', settings.language)}</span>
-        </button>
-        {(activeTab === 'home' ? aiConversation.length > 0 : messages.length > 0) && (
-          <button className="context-menu-item" onClick={handleClearActiveChat}>
-            <Trash2 size={14} /><span>{t('clearChat', settings.language)}</span>
+    {(newChatCtxMenu || newChatCtxMenuClosing) && (
+      <>
+        <div className={`context-menu-overlay${newChatCtxMenuClosing ? ' closing' : ''}`} onClick={closeNewChatCtxMenu} />
+        <div className={`context-menu attach-menu-context${newChatCtxMenuClosing ? ' closing' : ''}`} style={{ left: newChatCtxMenu?.x, top: newChatCtxMenu?.y }} onClick={(e) => e.stopPropagation()}>
+          <button className="context-menu-item" onClick={() => { closeNewChatCtxMenu(); setCreateGroupOpen(true) }}>
+            <Users size={16} /><span>{t('newGroup', settings.language)}</span>
           </button>
-        )}
-      </div>
+          <button className="context-menu-item" onClick={() => {
+            closeNewChatCtxMenu()
+            setFolderEditOpen(true)
+          }}>
+            <Folder size={16} /><span>{t('editFolders', settings.language)}</span>
+          </button>
+          {(activeTab === 'home' ? aiConversation.length > 0 : messages.length > 0) && (
+            <button className="context-menu-item" onClick={handleClearActiveChat}>
+              <Trash2 size={16} /><span>{t('clearChat', settings.language)}</span>
+            </button>
+          )}
+        </div>
+      </>
     )}
 
-    {folderEditOpen && (
-      <div className="dialog-overlay" onClick={() => setFolderEditOpen(false)}>
-        <div className="dialog dialog-ef" onClick={e => e.stopPropagation()}>
-          <div className="dialog-header">
-            <div className="dialog-title">{t('editFolders', settings.language)}</div>
-            <button className="dialog-close" onClick={() => setFolderEditOpen(false)}><X size={16} /></button>
+    {(folderEditOpen || folderEditClosing) && (
+      <div className={`dialog-overlay folder-edit-overlay${folderEditClosing ? ' closing' : ''}`} onClick={closeFolderEdit}>
+        <div className={`folder-edit-modal${folderEditClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+          <div className="folder-edit-header">
+            <h2 className="folder-edit-title">{t('editFolders', settings.language)}</h2>
+            <button className="folder-edit-close" onClick={closeFolderEdit}><X size={18} /></button>
           </div>
-
-          <div className="dialog-ef-body">
-            {/* LEFT SIDEBAR */}
-            <div className="dialog-ef-sidebar">
-              <div className="dialog-ef-sidebar-title">{t('folders', settings.language)}</div>
-              <div className="dialog-ef-sidebar-list">
-                {folders.map(folder => {
-                  const isActive = efSelectedFolderId === folder.id || (efSelectedFolderId === null && folder.id === folders[0]?.id)
+          <div className="folder-edit-search-wrap">
+            <Search size={16} className="folder-edit-search-icon" />
+            <input
+              className="folder-edit-search"
+              placeholder={t('search', settings.language)}
+              value={folderEditSearch}
+              onChange={e => setFolderEditSearch(e.target.value)}
+            />
+          </div>
+          <div className="folder-edit-body">
+            {folders.length === 0 ? (
+              <div className="folder-edit-empty">{t('noFolders', settings.language)}</div>
+            ) : (
+              (() => {
+                const term = folderEditSearch.trim().toLowerCase()
+                const filtered = term ? folders.filter(f => f.name.toLowerCase().includes(term)) : folders
+                if (filtered.length === 0) return <div className="folder-edit-empty">{t('noFolders', settings.language)}</div>
+                return filtered.map(folder => {
                   const isRenaming = efRenamingId === folder.id
                   return (
-                    <div key={folder.id}
-                      className={`dialog-ef-sidebar-item ${isActive ? 'active' : ''}`}
-                      onClick={() => { setEfSelectedFolderId(folder.id); setEfAddOpen(false); setEfAddQuery(''); setEfChatQuery(''); }}
-                    >
-                      <Folder size={16} />
+                    <div key={folder.id} className="folder-edit-row">
+                      <Folder size={18} className="folder-edit-row-icon" />
                       {isRenaming ? (
-                        <input className="dialog-ef-sidebar-input" autoFocus
+                        <input
+                          className="folder-edit-rename-input"
+                          autoFocus
                           value={efRenamingInput}
                           onChange={e => setEfRenamingInput(e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter') { submitEfRename() }
-                            else if (e.key === 'Escape') { cancelEfRename() }
-                          }}
+                          onKeyDown={e => { if (e.key === 'Enter') submitEfRename(); else if (e.key === 'Escape') cancelEfRename() }}
                           onBlur={submitEfRename}
-                          onClick={e => e.stopPropagation()}
                         />
                       ) : (
-                        <span className="dialog-ef-sidebar-name">{folder.name}</span>
+                        <div className="folder-edit-info">
+                          <span className="folder-edit-name">{folder.name}</span>
+                          <span className="folder-edit-count">{folder.chats.length} {folder.chats.length === 1 ? t('chat', settings.language) : t('chats', settings.language)}</span>
+                        </div>
                       )}
-                      <span className="dialog-ef-sidebar-count">{folder.chats.length}</span>
-                      {isActive && !isRenaming && (
-                        <div className="dialog-ef-sidebar-actions">
-                          <button className="dialog-ef-sidebar-btn" title={t('rename', settings.language)} onClick={(e) => { e.stopPropagation(); startEfRename(folder.id) }}>
-                            <Pencil size={12} />
+                      {!isRenaming && (
+                        <div className="folder-edit-actions">
+                          <button className="folder-edit-action" title={t('rename', settings.language)} onClick={() => startEfRename(folder.id)}>
+                            <Pencil size={15} />
                           </button>
-                          <button className="dialog-ef-sidebar-btn danger" title={t('delete', settings.language)} onClick={(e) => { e.stopPropagation(); deleteFolder(folder.id) }}>
-                            <Trash2 size={12} />
+                          <button className="folder-edit-action danger" title={t('delete', settings.language)} onClick={() => deleteFolder(folder.id)}>
+                            <Trash2 size={15} />
                           </button>
                         </div>
                       )}
                     </div>
                   )
-                })}
-                {folders.length === 0 && <div className="dialog-ef-empty">{t('noChats', settings.language)}</div>}
-              </div>
-              <div className="dialog-ef-sidebar-footer">
-                <input className="dialog-input" placeholder={t('newFolderName', settings.language)} value={folderEditInput}
-                  onChange={e => setFolderEditInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && folderEditInput.trim()) { createFolder(folderEditInput.trim()); setFolderEditInput('') } }} />
-                <button className="dialog-btn dialog-btn-primary" onClick={() => { if (folderEditInput.trim()) { createFolder(folderEditInput.trim()); setFolderEditInput('') } }}>
-                  <Plus size={16} />
-                </button>
-              </div>
-            </div>
-
-            {/* RIGHT MAIN */}
-            <div className="dialog-ef-main">
-              {(() => {
-                const selectedFolder = folders.find(f => f.id === efSelectedFolderId) || folders[0]
-                if (!selectedFolder) return <div className="dialog-ef-main-placeholder">{t('noChats', settings.language)}</div>
-                const folderChats = chats.filter(c => selectedFolder.chats.includes(c.id))
-                const filteredChats = folderChats.filter(c => c.name.toLowerCase().includes(efChatQuery.toLowerCase()))
-                const availableChats = chats.filter(c => !selectedFolder.chats.includes(c.id) && c.name !== 'Opus')
-                const filteredAvailable = availableChats.filter(c => c.name.toLowerCase().includes(efAddQuery.toLowerCase()))
-                return (
-                  <>
-                    <div className="dialog-ef-main-header">
-                      <div className="dialog-ef-main-title">
-                        <span>{selectedFolder.name}</span>
-                        <span className="dialog-ef-main-subtitle">{folderChats.length} {t('chats', settings.language)}</span>
-                      </div>
-                      <div className="dialog-ef-main-search">
-                        <Search size={14} />
-                        <input placeholder={t('search', settings.language)} value={efChatQuery} onChange={e => setEfChatQuery(e.target.value)} />
-                      </div>
-                    </div>
-                    <div className="dialog-ef-main-list">
-                      {filteredChats.length === 0 ? (
-                        <div className="dialog-ef-main-empty">
-                          {efChatQuery ? t('noUsersFound', settings.language) : t('allChatsInFolder', settings.language)}
-                        </div>
-                      ) : (
-                        filteredChats.map(chat => (
-                          <div key={chat.id} className="dialog-ef-main-chat">
-                            <div className="dialog-ef-main-avatar">
-                              {chat.participantAvatar ? (
-                                <img src={chat.participantAvatar} alt="" />
-                              ) : chat.isGroup ? (
-                                <Users size={14} />
-                              ) : (
-                                <User size={14} />
-                              )}
-                            </div>
-                            <span className="dialog-ef-main-chat-name">{chat.name}</span>
-                            <button className="dialog-ef-main-chat-remove" onClick={() => {
-                              api(`/folders/${selectedFolder.id}/chats/${chat.id}`, { method: 'DELETE' }).then(() => {
-                                setFolders(prev => prev.map(f => f.id === selectedFolder.id ? { ...f, chats: f.chats.filter(c => c !== chat.id) } : f))
-                              })
-                            }}>
-                              <X size={14} />
-                            </button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                    <div className="dialog-ef-main-add">
-                      <button className="dialog-ef-main-add-toggle" onClick={() => setEfAddOpen(v => !v)}>
-                        <Plus size={14} />
-                        <span>{t('addChat', settings.language)}</span>
-                        {efAddOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                      </button>
-                      {efAddOpen && (
-                        <div className="dialog-ef-main-add-panel">
-                          <div className="dialog-ef-main-add-search">
-                            <Search size={14} />
-                            <input placeholder={t('search', settings.language)} value={efAddQuery} onChange={e => setEfAddQuery(e.target.value)} />
-                          </div>
-                          <div className="dialog-ef-main-add-list">
-                            {filteredAvailable.length === 0 ? (
-                              <div className="dialog-ef-main-add-empty">{t('allChatsInFolder', settings.language)}</div>
-                            ) : (
-                              filteredAvailable.map(chat => (
-                                <button key={chat.id} className="dialog-ef-main-add-item" onClick={() => {
-                                  api(`/folders/${selectedFolder.id}/chats/${chat.id}`, { method: 'POST' }).then(() => {
-                                    setFolders(prev => prev.map(f => f.id === selectedFolder.id ? { ...f, chats: [...f.chats, chat.id] } : f))
-                                  })
-                                }}>
-                                  <div className="dialog-ef-main-add-avatar">
-                                    {chat.participantAvatar ? (
-                                      <img src={chat.participantAvatar} alt="" />
-                                    ) : chat.isGroup ? (
-                                      <Users size={14} />
-                                    ) : (
-                                      <User size={14} />
-                                    )}
-                                  </div>
-                                  <span className="dialog-ef-main-add-item-name">{chat.name}</span>
-                                  <Plus size={14} className="dialog-ef-main-add-icon" />
-                                </button>
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )
-              })()}
-            </div>
+                })
+              })()
+            )}
+          </div>
+          <div className="folder-edit-footer">
+            <button className="folder-edit-new" onClick={() => { closeFolderEdit(); setNewFolderOpen(true) }}>
+              <Plus size={18} /><span>{t('newFolder', settings.language)}</span>
+            </button>
           </div>
         </div>
       </div>
@@ -2308,13 +2865,17 @@ function App() {
             className={`context-menu-item${(settings as any)[settingDropdown.key] === option ? ' context-menu-item-active' : ''}`}
             onClick={() => selectSetting(settingDropdown.key, option)}
           >
-            {['lastSeen','profilePhoto','phonePrivacy','emailPrivacy','bioPrivacy'].includes(settingDropdown.key)
+            {['lastSeen','profilePhoto','addToGroup','phonePrivacy','emailPrivacy','bioPrivacy'].includes(settingDropdown.key)
               ? p(option, settings.language)
               : settingDropdown.key === 'language'
                 ? langName(option)
                 : settingDropdown.key === 'autoDownload'
                   ? t(option === 'Wi-Fi only' ? 'wiFiOnly' : option.toLowerCase(), settings.language)
-                  : option}
+                  : settingDropdown.key === 'theme'
+                    ? t(option.toLowerCase(), settings.language)
+                    : settingDropdown.key === 'timeFormat'
+                      ? t(option === '12h' ? 'hour12' : 'hour24', settings.language)
+                      : option}
             {(settings as any)[settingDropdown.key] === option && <span style={{ marginLeft: 'auto', color: '#ffffff' }}>✓</span>}
           </button>
         ))}
@@ -2435,13 +2996,26 @@ function App() {
       </div>
     )}
 
-    {addMemberDialogOpen && (
-      <div className="dialog-overlay" onClick={() => setAddMemberDialogOpen(false)}>
-        <div className="dialog" style={{ minWidth: 320, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+    {(addMemberDialogOpen || addMemberDialogClosing) && (
+      <div className={`dialog-overlay add-member-overlay${addMemberDialogClosing ? ' closing' : ''}`} onClick={closeAddMemberDialog}>
+        <div className={`dialog add-member-dialog${addMemberDialogClosing ? ' closing' : ''}`} style={{ minWidth: 320, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
           <div className="dialog-header">
             <h2 className="dialog-title">{t('addMember', settings.language)}</h2>
-            <button className="dialog-close" onClick={() => setAddMemberDialogOpen(false)}><X size={18} /></button>
+            <button className="dialog-close" onClick={closeAddMemberDialog}><X size={18} /></button>
           </div>
+          <button
+            className="context-menu-item"
+            onClick={() => { closeAddMemberDialog(); openInviteLinkDialog() }}
+            style={{ justifyContent: 'flex-start', gap: 10, marginBottom: 8, borderRadius: 10 }}
+          >
+            <div className="item-avatar" style={{ background: '#3287FE20' }}>
+              <Link size={16} color="#3287FE" strokeWidth={1.5} />
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+              <span style={{ color: '#fff' }}>{t('inviteViaLink', settings.language)}</span>
+            </div>
+            <ChevronRight size={16} color="#8c8c88" />
+          </button>
           <input
             ref={groupInfoAddInputRef}
             className="dialog-input"
@@ -2452,7 +3026,7 @@ function App() {
           {groupInfoAddResults.length > 0 && (
             <div className="dialog-ef-list" style={{ maxHeight: 260 }}>
               {groupInfoAddResults.map(u => (
-                <button key={u.id} className="context-menu-item" onClick={() => { handleAddGroupMember(u.id); setAddMemberDialogOpen(false) }} style={{ justifyContent: 'flex-start', gap: 10 }}>
+                <button key={u.id} className="context-menu-item" onClick={() => { handleAddGroupMember(u.id); closeAddMemberDialog() }} style={{ justifyContent: 'flex-start', gap: 10 }}>
                   <div className="item-avatar" style={u.avatar ? { backgroundImage: `url(${u.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
                     {!u.avatar && <User size={16} strokeWidth={1.5} />}
                   </div>
@@ -2465,6 +3039,138 @@ function App() {
               ))}
             </div>
           )}
+        </div>
+      </div>
+    )}
+
+    {(inviteLinkDialogOpen || inviteLinkDialogClosing) && (
+      <div className={`dialog-overlay add-member-overlay${inviteLinkDialogClosing ? ' closing' : ''}`} onClick={closeInviteLinkDialog}>
+        <div className={`dialog add-member-dialog${inviteLinkDialogClosing ? ' closing' : ''}`} style={{ minWidth: 320, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+          <div className="dialog-header">
+            <h2 className="dialog-title">{t('inviteLink', settings.language)}</h2>
+            <button className="dialog-close" onClick={closeInviteLinkDialog}><X size={18} /></button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '8px 0' }}>
+            <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#3287FE20', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Link size={24} color="#3287FE" strokeWidth={1.5} />
+            </div>
+            <div style={{ textAlign: 'center', color: '#8c8c88', fontSize: 14, lineHeight: 1.4 }}>
+              {t('inviteLinkSubtitle', settings.language)}
+            </div>
+            {inviteLinkLoading ? (
+              <Loader2 size={20} className="btn-spinner" style={{ margin: '12px 0' }} />
+            ) : inviteLinkCode ? (
+              <button
+                className="dialog-input"
+                style={{ cursor: 'pointer', textAlign: 'center', fontSize: 14, wordBreak: 'break-all', userSelect: 'all' }}
+                onClick={() => {
+                  const url = `${window.location.origin}/join/${inviteLinkCode}`
+                  navigator.clipboard.writeText(url).then(() => {
+                    showToast(t('linkCopied', settings.language))
+                  }).catch(() => {})
+                }}
+              >
+                {`${window.location.origin}/join/${inviteLinkCode}`}
+              </button>
+            ) : (
+              <div style={{ color: '#8c8c88', fontSize: 14 }}>{t('requestFailed', settings.language)}</div>
+            )}
+            <div style={{ textAlign: 'center', color: '#8c8c88', fontSize: 13 }}>
+              {t('linkExpiresIn', settings.language)}
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {(inviteJoinDialogOpen || inviteJoinDialogClosing) && (
+      <div className={`dialog-overlay${inviteJoinDialogClosing ? ' closing' : ''}`} onClick={closeInviteJoinDialog}>
+        <div className={`dialog${inviteJoinDialogClosing ? ' closing' : ''}`} style={{ minWidth: 320, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+          <div className="dialog-header">
+            <h2 className="dialog-title">{t('joinGroup', settings.language)}</h2>
+            <button className="dialog-close" onClick={closeInviteJoinDialog}><X size={18} /></button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: '8px 0 20px' }}>
+            {inviteJoinLoading ? (
+              <Loader2 size={28} className="btn-spinner" style={{ margin: '20px 0' }} />
+            ) : inviteJoinError ? (
+              <div style={{ textAlign: 'center', color: '#8c8c88', fontSize: 14, padding: '20px 0' }}>
+                {inviteJoinError}
+              </div>
+            ) : inviteJoinPreview ? (
+              <>
+                <div style={{ width: 72, height: 72, borderRadius: '50%', background: inviteJoinPreview.avatar ? `url(${inviteJoinPreview.avatar})` : '#3287FE20', backgroundSize: 'cover', backgroundPosition: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {!inviteJoinPreview.avatar && <Users size={32} color="#3287FE" strokeWidth={1.5} />}
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: '#fff', fontSize: 18, fontWeight: 600 }}>{inviteJoinPreview.name}</div>
+                  <div style={{ color: '#8c8c88', fontSize: 14, marginTop: 4 }}>
+                    {inviteJoinPreview.participantCount} {t('joinGroupMembers', settings.language)}
+                  </div>
+                  {inviteJoinPreview.adminName && (
+                    <div style={{ color: '#8c8c88', fontSize: 13, marginTop: 4 }}>
+                      {t('joinGroupAdmin', settings.language)}: {inviteJoinPreview.adminName}
+                    </div>
+                  )}
+                </div>
+                <div className="dialog-actions" style={{ width: '100%', marginTop: 8 }}>
+                  <button className="dialog-btn dialog-btn-cancel" onClick={closeInviteJoinDialog}>{t('cancel', settings.language)}</button>
+                  <button className="dialog-btn dialog-btn-primary" onClick={handleAcceptInvite} disabled={inviteJoinLoading}>
+                    {inviteJoinLoading ? <Loader2 size={16} className="btn-spinner" /> : t('join', settings.language)}
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    )}
+
+    {groupEditDialogOpen && activeChat?.isGroup && (
+      <div className={`dialog-overlay create-group-overlay${groupEditDialogClosing ? ' closing' : ''}`} onClick={closeGroupEditDialog}>
+        <div className={`dialog create-group-dialog${groupEditDialogClosing ? ' closing' : ''}`} style={{ minWidth: 320, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+          <div className="dialog-header">
+            <h2 className="dialog-title">{t('editGroup', settings.language)}</h2>
+            <button className="dialog-close" onClick={closeGroupEditDialog}><X size={18} /></button>
+          </div>
+          <input type="file" accept="image/*" style={{ display: 'none' }} ref={groupEditAvatarInputRef} onChange={(e) => { handleGroupAvatarChange(e, activeChat.id); e.target.value = '' }} />
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <label className="profile-avatar-large group-avatar" style={activeChat.avatar ? { backgroundImage: `url(${activeChat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent', cursor: 'pointer' } : { cursor: 'pointer' }} onClick={() => groupEditAvatarInputRef.current?.click()}>
+              {!activeChat.avatar && <Users size={36} strokeWidth={1.5} />}
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.35)', borderRadius: '50%', opacity: 0, transition: 'opacity 0.15s' }} className="profile-avatar-overlay">
+                <Camera size={20} color="#fff" />
+              </div>
+              {groupAvatarUploading && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', borderRadius: '50%' }}><Loader2 size={18} className="btn-spinner" /></div>}
+            </label>
+          </div>
+          <input
+            ref={groupEditInputRef}
+            className="dialog-input"
+            placeholder={t('groupName', settings.language)}
+            value={groupEditName}
+            onChange={e => setGroupEditName(e.target.value)}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, padding: '0 4px' }}>
+            <span style={{ fontSize: 15, color: '#ffffff', fontWeight: 500 }}>{t('disableCopying', settings.language)}</span>
+            <ToggleSwitch checked={groupEditDisableCopying} onChange={() => setGroupEditDisableCopying(v => !v)} />
+          </div>
+          <div className="dialog-actions">
+            <button className="dialog-btn dialog-btn-cancel" onClick={closeGroupEditDialog}>{t('cancel', settings.language)}</button>
+            <button
+              className="dialog-btn dialog-btn-primary"
+              disabled={!groupEditName.trim() || (groupEditName === activeChat.name && groupEditDisableCopying === activeChat.disableCopying)}
+              onClick={() => {
+                const payload: any = { name: groupEditName }
+                if (activeChat.disableCopying !== groupEditDisableCopying) {
+                  payload.disableCopying = groupEditDisableCopying
+                }
+                api(`/chats/${activeChat.id}`, { method: 'PUT', body: JSON.stringify(payload) }).then(() => {
+                  setChats(prev => prev.map(c => c.id === activeChat.id ? { ...c, name: groupEditName.trim(), disableCopying: groupEditDisableCopying } : c))
+                  closeGroupEditDialog()
+                }).catch(err => alert(err.message))
+              }}
+            >{t('save', settings.language)}</button>
+          </div>
         </div>
       </div>
     )}
@@ -2527,7 +3233,7 @@ function App() {
                 <div className="desktop-pro-plan-card-price-wrap">
                   <span className="desktop-pro-plan-card-currency">₽</span>
                   <span className="desktop-pro-plan-card-price">
-                    {proPlans.find((plan: Plan) => proPlan === (plan.id === 1 ? 'monthly' : 'annual'))?.price_rub.toLocaleString() || '—'}
+                    {(proPlan === 'monthly' ? 150 : 1299).toLocaleString()}
                   </span>
                 </div>
                 <div className="desktop-pro-plan-card-desc">{t('proPlanDesc', settings.language)}</div>
@@ -2547,10 +3253,6 @@ function App() {
                   <li>
                     <span className="desktop-pro-plan-card-check pro"><Check size={14} strokeWidth={2.5} /></span>
                     {t('advancedAiTools', settings.language)}
-                  </li>
-                  <li>
-                    <span className="desktop-pro-plan-card-check pro"><Check size={14} strokeWidth={2.5} /></span>
-                    {t('appearanceCustomization', settings.language)}
                   </li>
                   <li>
                     <span className="desktop-pro-plan-card-check pro"><Check size={14} strokeWidth={2.5} /></span>
@@ -2678,6 +3380,54 @@ function App() {
           <div className="delete-folder-actions">
             <button className="delete-folder-btn cancel" onClick={closeDeleteFolderConfirm}>{t('cancel', settings.language)}</button>
             <button className="delete-folder-btn danger" onClick={confirmDeleteFolder}>{t('delete', settings.language)}</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {(contactConfirm || contactConfirmClosing) && (
+      <div className={`dialog-overlay delete-folder-overlay${contactConfirmClosing ? ' closing' : ''}`} onClick={closeContactConfirm}>
+        <div className={`delete-folder-dialog${contactConfirmClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+          <h2 className="delete-folder-title">
+            {contactConfirm?.action === 'add'
+              ? t('addContactConfirm', settings.language).replace('%s', contactConfirm?.name || '')
+              : contactConfirm?.action === 'delete'
+              ? t('deleteContactConfirm', settings.language).replace('%s', contactConfirm?.name || '')
+              : contactConfirm?.action === 'block'
+              ? t('blockConfirm', settings.language).replace('%s', contactConfirm?.name || '')
+              : t('unblockConfirm', settings.language).replace('%s', contactConfirm?.name || '')}
+          </h2>
+          <div className="delete-folder-actions">
+            <button className="delete-folder-btn cancel" onClick={closeContactConfirm}>{t('cancel', settings.language)}</button>
+            <button
+              className={`delete-folder-btn ${contactConfirm?.action === 'add' || contactConfirm?.action === 'unblock' ? 'primary' : 'danger'}`}
+              onClick={confirmContactAction}
+            >
+              {contactConfirm?.action === 'add'
+                ? t('add', settings.language)
+                : contactConfirm?.action === 'delete'
+                ? t('delete', settings.language)
+                : contactConfirm?.action === 'block'
+                ? t('block', settings.language)
+                : t('unblock', settings.language)}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {(confirmDialog || confirmDialogClosing) && (
+      <div className={`dialog-overlay${confirmDialogClosing ? ' closing' : ''}`} onClick={closeConfirm}>
+        <div className={`dialog${confirmDialogClosing ? ' closing' : ''}`} style={{ minWidth: 320, maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '16px 0 8px' }}>
+            <div style={{ color: '#fff', fontSize: 18, fontWeight: 600 }}>{confirmDialog?.title}</div>
+            {confirmDialog?.message && <div style={{ color: '#8c8c88', fontSize: 14, textAlign: 'center' }}>{confirmDialog.message}</div>}
+            <div className="dialog-actions" style={{ width: '100%', marginTop: 8 }}>
+              <button className="dialog-btn dialog-btn-cancel" onClick={closeConfirm}>{t('cancel', settings.language)}</button>
+              <button className="dialog-btn dialog-btn-primary" style={{ background: '#ff4d4d', borderColor: '#ff4d4d', color: '#fff' }} onClick={() => { confirmDialog?.onConfirm(); closeConfirm() }}>
+                {t('leaveGroup', settings.language)}
+              </button>
+            </div>
           </div>
         </div>
       </div>

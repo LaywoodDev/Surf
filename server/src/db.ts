@@ -28,6 +28,7 @@ db.exec(`
     name TEXT NOT NULL,
     is_group INTEGER DEFAULT 0,
     avatar TEXT DEFAULT '',
+    disable_copying INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   );
 
@@ -50,6 +51,8 @@ db.exec(`
     FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
   );
 `)
+
+try { db.exec(`ALTER TABLE chats ADD COLUMN disable_copying INTEGER DEFAULT 0`) } catch {};
 
 try { db.exec(`ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''`) } catch {};
 try { db.exec(`ALTER TABLE users ADD COLUMN privacy TEXT DEFAULT '{"phone":"Everyone","email":"Everyone","bio":"Everyone"}'`) } catch {};
@@ -135,6 +138,9 @@ db.exec(`
 
 try { db.exec(`ALTER TABLE messages ADD COLUMN poll_id INTEGER`) } catch {};
 
+try { db.exec(`ALTER TABLE messages ADD COLUMN forward_from_id INTEGER`) } catch {};
+try { db.exec(`ALTER TABLE messages ADD COLUMN forward_from_name TEXT DEFAULT ''`) } catch {};
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS public_keys (
     user_id INTEGER PRIMARY KEY,
@@ -163,6 +169,45 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (plan_id) REFERENCES subscription_plans(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS contacts (
+    owner_id INTEGER NOT NULL,
+    contact_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (owner_id, contact_id),
+    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (contact_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS blocked_users (
+    owner_id INTEGER NOT NULL,
+    blocked_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (owner_id, blocked_id),
+    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (blocked_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS chat_invite_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    code TEXT UNIQUE NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_by INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
   );
 `);
 

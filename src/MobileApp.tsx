@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react'
 import {
   MessageSquare, User, Users, Plus, Search, ArrowUp, Reply,
   Copy, Trash2, Settings, Pencil, Phone,
@@ -6,14 +6,16 @@ import {
   ChevronRight, Mail, AtSign,
   Globe, Eye, Volume2, AlignLeft, Clock,
   Pin, Folder, Check, LogOut, BarChart3, CheckCircle,
-  Cloud, BadgeCheck, Loader2, AlertCircle
+  Cloud, BadgeCheck, Loader2, AlertCircle, Shield, ShieldOff,
+  UserPlus, UserMinus, Sparkles, Palette, Bell, Forward, Link
 } from 'lucide-react'
-import { t, langName, p } from './i18n'
+import { t, langName, p, formatTime } from './i18n'
 import Offer from './pages/Offer'
 import Contacts from './pages/Contacts'
 import ProSuccess from './pages/ProSuccess'
 import './MobileApp.css'
 import * as e2e from './crypto'
+import { registerPush, unregisterPush } from './push'
 
 
 interface Chat {
@@ -30,6 +32,8 @@ interface Chat {
   participantCount?: number
   avatar?: string
   role?: 'admin' | 'member'
+  blocked?: boolean
+  disableCopying?: boolean
 }
 
 interface GroupParticipant {
@@ -47,14 +51,6 @@ interface Folder {
   icon: string
   sortOrder: number
   chats: number[]
-}
-
-interface Plan {
-  id: number
-  name: string
-  price_rub: number
-  duration_days: number
-  description: string
 }
 
 interface ProStatus {
@@ -95,6 +91,8 @@ interface Message {
   attachmentUrl?: string
   attachmentType?: string
   pollId?: number
+  forwardFromId?: number
+  forwardFromName?: string
 }
 
 interface UserData {
@@ -106,6 +104,8 @@ interface UserData {
   phone: string
   bio: string
   avatar?: string
+  online?: boolean
+  lastSeen?: string | null
 }
 
 const API = '/api'
@@ -114,10 +114,13 @@ const SETTINGS_STORAGE_KEY = 'surf_settings'
 const defaultSettings = {
   language: 'English',
   theme: 'Dark',
+  timeFormat: '24h',
   previews: 'On',
   sounds: 'On',
+  pushNotifications: true,
   lastSeen: 'Everyone',
   profilePhoto: 'Everyone',
+  addToGroup: 'Everyone',
   autoDownload: 'Wi-Fi only',
   phonePrivacy: 'Everyone',
   emailPrivacy: 'Everyone',
@@ -301,6 +304,10 @@ function MobileApp() {
   const [contactProfile, setContactProfile] = useState<UserData | null>(null)
   const [viewedUser, setViewedUser] = useState<UserData | null>(null)
   const [contacts, setContacts] = useState<UserData[]>([])
+  const [blockedUsers, setBlockedUsers] = useState<UserData[]>([])
+  const [mentionableUsers, setMentionableUsers] = useState<UserData[]>([])
+  const [contactConfirm, setContactConfirm] = useState<{ action: 'add' | 'delete' | 'block' | 'unblock'; userId: number; name: string } | null>(null)
+  const [contactConfirmClosing, setContactConfirmClosing] = useState(false)
   const [mentionMenu, setMentionMenu] = useState<{ chatId: number; query: string } | null>(null)
   const [replyTo, setReplyTo] = useState<{ messageId: number; text: string; attachmentUrl?: string; attachmentType?: string } | null>(null)
   const [pendingAttachments, setPendingAttachments] = useState<{ url: string; type: string; name: string }[]>([])
@@ -457,9 +464,76 @@ function MobileApp() {
   const [threadMenu, setThreadMenu] = useState<{ x: number; y: number } | null>(null)
   const [memberMenu, setMemberMenu] = useState<{ participantId: number; x: number; y: number } | null>(null)
   const [addMemberSheetOpen, setAddMemberSheetOpen] = useState(false)
+  const [addMemberSheetClosing, setAddMemberSheetClosing] = useState(false)
+  const [inviteLinkSheetOpen, setInviteLinkSheetOpen] = useState(false)
+  const [inviteLinkSheetClosing, setInviteLinkSheetClosing] = useState(false)
+  const [inviteLinkCode, setInviteLinkCode] = useState<string | null>(null)
+  const [inviteLinkLoading, setInviteLinkLoading] = useState(false)
+  const [inviteJoinOpen, setInviteJoinOpen] = useState(false)
+  const [inviteJoinClosing, setInviteJoinClosing] = useState(false)
+  const [inviteJoinCode, setInviteJoinCode] = useState<string | null>(null)
+  const [inviteJoinPreview, setInviteJoinPreview] = useState<{ id: number; name: string; avatar?: string; participantCount: number; adminName?: string; adminAvatar?: string } | null>(null)
+  const [inviteJoinLoading, setInviteJoinLoading] = useState(false)
+  const [inviteJoinError, setInviteJoinError] = useState<string | null>(null)
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message?: string; onConfirm: () => void } | null>(null)
+  const [confirmDialogClosing, setConfirmDialogClosing] = useState(false)
+  const [groupInfoMoreOpen, setGroupInfoMoreOpen] = useState(false)
+  const [groupInfoMoreClosing, setGroupInfoMoreClosing] = useState(false)
+  const [contactMoreOpen, setContactMoreOpen] = useState(false)
+  const [contactMoreClosing, setContactMoreClosing] = useState(false)
+  const [addMemberSelected, setAddMemberSelected] = useState<number[]>([])
+  const [groupEditOpen, setGroupEditOpen] = useState(false)
+  const [groupEditName, setGroupEditName] = useState('')
+  const [groupEditDisableCopying, setGroupEditDisableCopying] = useState(false)
+  const groupEditInputRef = useRef<HTMLInputElement>(null)
+  const groupEditAvatarInputRef = useRef<HTMLInputElement>(null)
+  const groupInfoAvatarInputRef = useRef<HTMLInputElement>(null)
+  const createGroupAvatarInputRef = useRef<HTMLInputElement>(null)
   const [clearChatSubmenu, setClearChatSubmenu] = useState(false)
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false)
+  const [searchPanelClosing, setSearchPanelClosing] = useState(false)
+  const [searchMessagesQuery, setSearchMessagesQuery] = useState('')
+  const searchMessagesInputRef = useRef<HTMLInputElement>(null)
+
+  const openSearchPanel = useCallback(() => {
+    setSearchPanelOpen(true)
+    setSearchMessagesQuery('')
+    setTimeout(() => searchMessagesInputRef.current?.focus(), 100)
+  }, [])
+
+  const closeSearchPanel = useCallback(() => {
+    if (!searchPanelOpen || searchPanelClosing) return
+    setSearchPanelClosing(true)
+    setTimeout(() => {
+      setSearchPanelOpen(false)
+      setSearchPanelClosing(false)
+      setSearchMessagesQuery('')
+    }, 220)
+  }, [searchPanelOpen, searchPanelClosing])
   const [deleteMessageSubmenu, setDeleteMessageSubmenu] = useState(false)
+  const [forwardPickerOpen, setForwardPickerOpen] = useState(false)
+  const [forwardPickerClosing, setForwardPickerClosing] = useState(false)
+  const [forwardMessage, setForwardMessage] = useState<Message | null>(null)
+  const [forwardSearchQuery, setForwardSearchQuery] = useState('')
+
+  const openForwardPicker = useCallback((msg: Message) => {
+    setForwardMessage(msg)
+    setForwardPickerOpen(true)
+    setForwardSearchQuery('')
+  }, [])
+
+  const closeForwardPicker = useCallback(() => {
+    if (!forwardPickerOpen || forwardPickerClosing) return
+    setForwardPickerClosing(true)
+    setTimeout(() => {
+      setForwardPickerOpen(false)
+      setForwardPickerClosing(false)
+      setForwardMessage(null)
+      setForwardSearchQuery('')
+    }, 220)
+  }, [forwardPickerOpen, forwardPickerClosing])
   const [fullscreenImage, setFullscreenImage] = useState<string | null>(null)
+  const [fullscreenAvatar, setFullscreenAvatar] = useState<string | null>(null)
   const [avatarOpen, setAvatarOpen] = useState(false)
   const profileAvatarRef = useRef<HTMLDivElement>(null)
   const avatarCloneRef = useRef<{ clone: HTMLElement; original: HTMLElement; overlay: HTMLDivElement } | null>(null)
@@ -488,7 +562,10 @@ function MobileApp() {
       setFolderMenuSheet(false)
       setOpusMenuSheet(false)
       setAddChatsSheet(null)
+      setPlanFeaturesOpen(false)
       setClosingSheet(null)
+      closeSearchPanel()
+      closeForwardPicker()
     }, 200)
   }
 
@@ -505,7 +582,10 @@ function MobileApp() {
     setFolderMenuSheet(false)
     setOpusMenuSheet(false)
     setAddChatsSheet(null)
+    setPlanFeaturesOpen(false)
     setClosingSheet(null)
+    closeSearchPanel()
+    closeForwardPicker()
   }
 
   const handleOpenPro = () => setProOpen(true)
@@ -607,8 +687,9 @@ function MobileApp() {
   const [editProfile, setEditProfile] = useState({ username: '', phone: '', bio: '' })
   const [profileView, setProfileView] = useState<'profile' | 'edit' | 'settings'>('profile')
   const [proOpen, setProOpen] = useState(false)
+  const [planFeaturesOpen, setPlanFeaturesOpen] = useState(false)
   const [proPlan, setProPlan] = useState<'monthly' | 'annual'>('annual')
-  const [proPlans, setProPlans] = useState<Plan[]>([])
+
   const [proStatus, setProStatus] = useState<ProStatus | null>(null)
   const [upgradeLoading, setUpgradeLoading] = useState(false)
   const [paymentError, setPaymentError] = useState<string | null>(null)
@@ -621,12 +702,158 @@ function MobileApp() {
     }, 220)
   }
   const closeCreateGroup = useCallback(() => {
-    setCreateGroupClosing(true)
+    setCreateGroupOpen(false)
+    setCreateGroupStep('members')
+    setCreateGroupSearchQuery('')
+    setCreateGroupName('')
+    setCreateGroupSelected([])
+    setCreateGroupAvatarFile(null)
+    setCreateGroupAvatarPreview(null)
+    setCreateGroupDisableCopying(false)
+  }, [])
+  const closeGroupEdit = useCallback(() => {
+    setGroupEditOpen(false)
+    setGroupEditDisableCopying(false)
+  }, [])
+  const closeAddMemberSheet = useCallback(() => {
+    setAddMemberSheetClosing(true)
     setTimeout(() => {
-      setCreateGroupOpen(false)
-      setCreateGroupClosing(false)
+      setAddMemberSheetOpen(false)
+      setAddMemberSheetClosing(false)
+      setAddMemberSelected([])
+      setGroupInfoAddQuery('')
+      setGroupInfoAddResults([])
     }, 220)
   }, [])
+
+  const openInviteLinkSheet = useCallback(() => {
+    if (!activeChatId) return
+    setInviteLinkSheetOpen(true)
+    setInviteLinkLoading(true)
+    api(`/chats/${activeChatId}/invite-link`, { method: 'POST' })
+      .then((res: any) => setInviteLinkCode(res.code))
+      .catch(() => setInviteLinkCode(null))
+      .finally(() => setInviteLinkLoading(false))
+  }, [activeChatId])
+
+  const closeInviteLinkSheet = useCallback(() => {
+    setInviteLinkSheetClosing(true)
+    setTimeout(() => {
+      setInviteLinkSheetOpen(false)
+      setInviteLinkSheetClosing(false)
+      setInviteLinkCode(null)
+    }, 220)
+  }, [])
+
+  const closeInviteJoin = useCallback(() => {
+    setInviteJoinClosing(true)
+    setTimeout(() => {
+      setInviteJoinOpen(false)
+      setInviteJoinClosing(false)
+      setInviteJoinCode(null)
+      setInviteJoinPreview(null)
+      setInviteJoinError(null)
+    }, 220)
+  }, [])
+
+  const openConfirm = useCallback((title: string, message: string | undefined, onConfirm: () => void) => {
+    setConfirmDialog({ title, message, onConfirm })
+    setConfirmDialogClosing(false)
+  }, [])
+
+  const closeConfirm = useCallback(() => {
+    setConfirmDialogClosing(true)
+    setTimeout(() => {
+      setConfirmDialog(null)
+      setConfirmDialogClosing(false)
+    }, 220)
+  }, [])
+
+  const handleAcceptInvite = () => {
+    if (!inviteJoinCode) return
+    setInviteJoinLoading(true)
+    api(`/chats/join/${inviteJoinCode}`, { method: 'POST' })
+      .then((chat: Chat) => {
+        setChats(prev => [chat, ...prev])
+        setActiveChatId(chat.id)
+        setChatView('thread')
+        closeInviteJoin()
+      })
+      .catch((err: any) => setInviteJoinError(err.message || 'Failed to join'))
+      .finally(() => setInviteJoinLoading(false))
+  }
+
+  const closeGroupInfoMore = useCallback(() => {
+    if (groupInfoMoreClosing) return
+    setGroupInfoMoreClosing(true)
+    setTimeout(() => {
+      setGroupInfoMoreOpen(false)
+      setGroupInfoMoreClosing(false)
+    }, 200)
+  }, [groupInfoMoreClosing])
+  const closeContactMore = useCallback(() => {
+    if (contactMoreClosing) return
+    setContactMoreClosing(true)
+    setTimeout(() => {
+      setContactMoreOpen(false)
+      setContactMoreClosing(false)
+    }, 200)
+  }, [contactMoreClosing])
+
+  const isContact = useCallback((userId?: number) => userId ? contacts.some(c => c.id === userId) : false, [contacts])
+  const isBlocked = useCallback((userId?: number) => userId ? blockedUsers.some(b => b.id === userId) : false, [blockedUsers])
+
+  const addContact = useCallback(async (userId: number) => {
+    await api('/users/contacts', { method: 'POST', body: JSON.stringify({ userId }) })
+    const u = (viewedUser || contactProfile)
+    if (u && u.id === userId && !contacts.some(c => c.id === userId)) {
+      setContacts(prev => [...prev, u])
+    }
+  }, [contacts, viewedUser, contactProfile])
+
+  const removeContact = useCallback(async (userId: number) => {
+    await api(`/users/contacts/${userId}`, { method: 'DELETE' })
+    setContacts(prev => prev.filter(c => c.id !== userId))
+  }, [])
+
+  const blockUser = useCallback(async (userId: number) => {
+    await api('/users/block', { method: 'POST', body: JSON.stringify({ userId }) })
+    const u = (viewedUser || contactProfile)
+    if (u && u.id === userId && !blockedUsers.some(b => b.id === userId)) {
+      setBlockedUsers(prev => [...prev, u])
+      setContacts(prev => prev.filter(c => c.id !== userId))
+    }
+    setChats(prev => prev.map(c => c.participantId === userId ? { ...c, blocked: true } : c))
+  }, [blockedUsers, viewedUser, contactProfile])
+
+  const unblockUser = useCallback(async (userId: number) => {
+    await api(`/users/block/${userId}`, { method: 'DELETE' })
+    setBlockedUsers(prev => prev.filter(b => b.id !== userId))
+    setChats(prev => prev.map(c => c.participantId === userId ? { ...c, blocked: false } : c))
+  }, [])
+
+  const closeContactConfirm = useCallback(() => {
+    setContactConfirmClosing(true)
+    setTimeout(() => {
+      setContactConfirm(null)
+      setContactConfirmClosing(false)
+    }, 220)
+  }, [])
+
+  const confirmContactAction = useCallback(() => {
+    if (!contactConfirm) return
+    const { action, userId } = contactConfirm
+    if (action === 'add') {
+      addContact(userId).then(closeContactConfirm).catch(err => alert(err.message))
+    } else if (action === 'delete') {
+      removeContact(userId).then(closeContactConfirm).catch(err => alert(err.message))
+    } else if (action === 'block') {
+      blockUser(userId).then(closeContactConfirm).catch(err => alert(err.message))
+    } else if (action === 'unblock') {
+      unblockUser(userId).then(closeContactConfirm).catch(err => alert(err.message))
+    }
+  }, [contactConfirm, addContact, removeContact, blockUser, unblockUser, closeContactConfirm])
+
   const [pageStack, setPageStack] = useState<string[]>(() => {
     const p = window.location.pathname
     if (p === '/offer') return ['offer']
@@ -643,9 +870,13 @@ function MobileApp() {
   const [pollsCache, setPollsCache] = useState<Record<number, Poll>>({})
 
   const [createGroupOpen, setCreateGroupOpen] = useState(false)
-  const [createGroupClosing, setCreateGroupClosing] = useState(false)
+  const [createGroupStep, setCreateGroupStep] = useState<'members' | 'details'>('members')
   const [createGroupName, setCreateGroupName] = useState('')
   const [createGroupSelected, setCreateGroupSelected] = useState<number[]>([])
+  const [createGroupSearchQuery, setCreateGroupSearchQuery] = useState('')
+  const [createGroupAvatarFile, setCreateGroupAvatarFile] = useState<File | null>(null)
+  const [createGroupAvatarPreview, setCreateGroupAvatarPreview] = useState<string | null>(null)
+  const [createGroupDisableCopying, setCreateGroupDisableCopying] = useState(false)
   const [groupInfoChatId, setGroupInfoChatId] = useState<number | null>(null)
   const [groupParticipants, setGroupParticipants] = useState<GroupParticipant[]>([])
   const [groupInfoAddQuery, setGroupInfoAddQuery] = useState('')
@@ -662,14 +893,19 @@ function MobileApp() {
         setUser(u)
         setEditProfile({ username: u.username || '', phone: u.phone || '', bio: u.bio || '' })
         if (u.privacy) {
-          setSettings(prev => ({
+          setSettings((prev: typeof defaultSettings) => ({
             ...prev,
             phonePrivacy: u.privacy.phone || 'Everyone',
             emailPrivacy: u.privacy.email || 'Everyone',
             bioPrivacy: u.privacy.bio || 'Everyone',
             profilePhoto: u.privacy.profilePhoto || 'Everyone',
             lastSeen: u.privacy.lastSeen || 'Everyone',
+            addToGroup: u.privacy.addToGroup || 'Everyone',
           }))
+        }
+        const loadedSettings = loadSettings()
+        if (loadedSettings.pushNotifications) {
+          registerPush().catch(() => {})
         }
       }).catch(() => {
         localStorage.removeItem('token')
@@ -680,20 +916,54 @@ function MobileApp() {
   }, [token])
 
   useEffect(() => {
+    const match = window.location.pathname.match(/^\/join\/(.+)$/)
+    if (match && token) {
+      const code = match[1]
+      setInviteJoinCode(code)
+      setInviteJoinLoading(true)
+      setInviteJoinOpen(true)
+      api(`/chats/join/${code}`)
+        .then((res: any) => {
+          setInviteJoinPreview(res)
+          setInviteJoinError(null)
+        })
+        .catch((err: any) => {
+          setInviteJoinError(err.message || 'Invalid invite link')
+        })
+        .finally(() => setInviteJoinLoading(false))
+      window.history.replaceState({}, '', '/')
+    }
+  }, [token])
+
+  useEffect(() => {
     if (isLoggedIn) {
-      api('/chats').then(async (data: Chat[]) => {
-        const decrypted = await Promise.all(data.map(async (c) => {
-          if (c.participantId && c.lastMessage && e2e.isEncrypted(c.lastMessage)) {
-            const key = await e2e.getSharedKey(c.participantId, localStorage.getItem('token')!)
-            if (key) c.lastMessage = await e2e.decrypt(key, c.lastMessage)
-          }
-          return c
-        }))
-        setChats(decrypted)
-      })
+      const loadChats = () => {
+        api('/chats').then(async (data: Chat[]) => {
+          const decrypted = await Promise.all(data.map(async (c) => {
+            if (c.participantId && c.lastMessage && e2e.isEncrypted(c.lastMessage)) {
+              const key = await e2e.getSharedKey(c.participantId, localStorage.getItem('token')!)
+              if (key) c.lastMessage = await e2e.decrypt(key, c.lastMessage)
+            }
+            return c
+          }))
+          setChats(decrypted)
+        })
+      }
+      const loadContacts = () => {
+        api('/users/contacts').then(setContacts)
+        api('/users/blocked').then(setBlockedUsers)
+        api('/users/mentionable').then(setMentionableUsers)
+      }
+      loadChats()
+      loadContacts()
       api('/folders').then(setFolders)
-      api('/users/contacts').then(setContacts)
       api('/subscription/status').then(setProStatus).catch(() => {})
+      const chatsInterval = window.setInterval(loadChats, 10000)
+      const contactsInterval = window.setInterval(loadContacts, 10000)
+      return () => {
+        window.clearInterval(chatsInterval)
+        window.clearInterval(contactsInterval)
+      }
     }
   }, [isLoggedIn])
 
@@ -705,12 +975,6 @@ function MobileApp() {
     }, 30000)
     return () => window.clearInterval(pingInterval)
   }, [isLoggedIn])
-
-  useEffect(() => {
-    if (proOpen) {
-      api('/subscription/plans').then(data => setProPlans(data.plans || [])).catch(() => {})
-    }
-  }, [proOpen])
 
   useEffect(() => {
     localStorage.setItem(CHAT_DRAFTS_STORAGE_KEY, JSON.stringify(chatInputTexts))
@@ -746,6 +1010,14 @@ function MobileApp() {
     return () => window.clearInterval(interval)
   }, [activeChatId, chats])
 
+  useLayoutEffect(() => {
+    if (activeChatId) {
+      setMessages([])
+      setContactProfile(null)
+      setGroupParticipants([])
+    }
+  }, [activeChatId])
+
   useEffect(() => {
     if (activeChatId) {
       const fetchMessages = async () => {
@@ -776,12 +1048,15 @@ function MobileApp() {
 
       fetchMessages()
       const chat = chats.find(c => c.id === activeChatId)
-      if (chat?.isGroup) {
-        api(`/chats/${activeChatId}/participants`).then(setGroupParticipants).catch(() => setGroupParticipants([]))
-        setContactProfile(null)
-      } else {
-        api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
+      const fetchOtherUser = () => {
+        if (chat?.isGroup) {
+          api(`/chats/${activeChatId}/participants`).then(setGroupParticipants).catch(() => setGroupParticipants([]))
+          setContactProfile(null)
+        } else {
+          api(`/chats/${activeChatId}/other-user`).then(setContactProfile).catch(() => setContactProfile(null))
+        }
       }
+      fetchOtherUser()
       api(`/polls/chat/${activeChatId}`).then((polls: Poll[]) => {
         const cacheUpdate: Record<number, Poll> = {}
         polls.forEach(p => { cacheUpdate[p.id] = p })
@@ -789,8 +1064,10 @@ function MobileApp() {
       }).catch(() => {})
 
       const pollInterval = window.setInterval(fetchMessages, 3000)
+      const otherUserInterval = window.setInterval(fetchOtherUser, 5000)
       return () => {
         window.clearInterval(pollInterval)
+        window.clearInterval(otherUserInterval)
       }
     }
     setMentionMenu(null)
@@ -808,7 +1085,7 @@ function MobileApp() {
           setAiConversation(msgs.map(m => ({
             role: (m.sender === 'me' ? 'user' : 'ai') as 'user' | 'ai',
             text: m.text,
-            time: m.time
+            time: formatTime(m.time, settings.timeFormat)
           })))
         }).catch(() => {})
       }
@@ -864,6 +1141,13 @@ function MobileApp() {
   }, [fullscreenImage])
 
   useEffect(() => {
+    if (!fullscreenAvatar) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreenAvatar(null) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [fullscreenAvatar])
+
+  useEffect(() => {
     if (!avatarOpen) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeAvatarAnim() }
     document.addEventListener('keydown', onKey)
@@ -902,10 +1186,54 @@ function MobileApp() {
   }, [memberMenu])
 
   useEffect(() => {
+    if (!groupInfoMoreOpen) return
+    const handleClick = () => { closeGroupInfoMore() }
+    const handleScroll = () => { closeGroupInfoMore() }
+    document.addEventListener('click', handleClick)
+    document.addEventListener('scroll', handleScroll, true)
+    return () => {
+      document.removeEventListener('click', handleClick)
+      document.removeEventListener('scroll', handleScroll, true)
+    }
+  }, [groupInfoMoreOpen])
+
+  useEffect(() => {
+    if (!contactMoreOpen) return
+    const handleClick = () => { closeContactMore() }
+    const handleScroll = () => { closeContactMore() }
+    document.addEventListener('click', handleClick)
+    document.addEventListener('scroll', handleScroll, true)
+    return () => {
+      document.removeEventListener('click', handleClick)
+      document.removeEventListener('scroll', handleScroll, true)
+    }
+  }, [contactMoreOpen])
+
+  useEffect(() => {
+    if (!searchPanelOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeSearchPanel() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [searchPanelOpen, closeSearchPanel])
+
+  useEffect(() => {
+    if (!forwardPickerOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeForwardPicker() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [forwardPickerOpen, closeForwardPicker])
+
+  useEffect(() => {
     if (!addMemberSheetOpen) return
     const t = setTimeout(() => groupInfoAddInputRef.current?.focus(), 100)
     return () => clearTimeout(t)
   }, [addMemberSheetOpen])
+
+  useEffect(() => {
+    if (!groupEditOpen) return
+    const t = setTimeout(() => groupEditInputRef.current?.focus(), 100)
+    return () => clearTimeout(t)
+  }, [groupEditOpen])
 
   const activeChat = chats.find(c => c.id === activeChatId)
   const hasEditChanges = editProfile.username !== (user?.username || '') || editProfile.phone !== (user?.phone || '') || editProfile.bio !== (user?.bio || '')
@@ -1079,21 +1407,37 @@ function MobileApp() {
     }).catch(err => alert(err.message))
   }
 
-  const handleCreateGroup = () => {
+  const handleCreateGroup = async () => {
     const name = createGroupName.trim()
     if (!name || createGroupSelected.length === 0) return
-    api('/chats/group', {
-      method: 'POST',
-      body: JSON.stringify({ name, participantIds: createGroupSelected })
-    }).then((newChat: Chat) => {
+    try {
+      const newChat: Chat = await api('/chats/group', {
+        method: 'POST',
+        body: JSON.stringify({ name, participantIds: createGroupSelected, disableCopying: createGroupDisableCopying })
+      })
+      if (createGroupAvatarFile) {
+        const formData = new FormData()
+        formData.append('avatar', createGroupAvatarFile)
+        formData.append('chatId', String(newChat.id))
+        try {
+          const res = await api('/upload/group-avatar', { method: 'POST', body: formData })
+          newChat.avatar = res.avatar
+        } catch (err: unknown) {
+          alert(err instanceof Error ? err.message : 'Failed to upload avatar')
+        }
+      }
       setChats(prev => [newChat, ...prev])
-      setActiveChatId(newChat.id)
-      setChatView('thread')
       setTab('chats')
       closeCreateGroup()
       setCreateGroupName('')
       setCreateGroupSelected([])
-    }).catch(err => alert(err.message))
+      setCreateGroupSearchQuery('')
+      setCreateGroupAvatarFile(null)
+      setCreateGroupAvatarPreview(null)
+      setCreateGroupStep('members')
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Failed to create group')
+    }
   }
 
   const fetchGroupInfoParticipants = (chatId: number) => {
@@ -1122,6 +1466,59 @@ function MobileApp() {
     }).catch(err => alert(err.message))
   }
 
+  const handleDeleteGroup = useCallback(() => {
+    if (!groupInfoChatId) return
+    const chat = chats.find(c => c.id === groupInfoChatId)
+    if (!chat) return
+    closeGroupInfoMore()
+    openConfirm(
+      t('deleteGroup', settings.language),
+      t('deleteGroupConfirm', settings.language).replace('%s', chat.name),
+      () => {
+        api(`/chats/${groupInfoChatId}`, { method: 'DELETE' }).then(() => {
+          setChats(prev => prev.filter(c => c.id !== groupInfoChatId))
+          setGroupInfoChatId(null)
+        }).catch(err => alert(err.message))
+      }
+    )
+  }, [groupInfoChatId, chats, settings.language, openConfirm, closeGroupInfoMore])
+
+  const handleLeaveGroup = useCallback(() => {
+    if (!groupInfoChatId || !user) return
+    const chat = chats.find(c => c.id === groupInfoChatId)
+    if (!chat) return
+    closeGroupInfoMore()
+    openConfirm(
+      t('leaveGroup', settings.language),
+      t('leaveGroupConfirm', settings.language).replace('%s', chat.name),
+      () => {
+        api(`/chats/${groupInfoChatId}/participants/${user.id}`, { method: 'DELETE' }).then(() => {
+          setChats(prev => prev.filter(c => c.id !== groupInfoChatId))
+          setGroupInfoChatId(null)
+        }).catch(err => alert(err.message))
+      }
+    )
+  }, [groupInfoChatId, user, chats, settings.language, openConfirm])
+
+  const handleDeleteContactChat = useCallback(() => {
+    if (!activeChatId) return
+    api(`/chats/${activeChatId}`, { method: 'DELETE' }).then(() => {
+      setChats(prev => prev.filter(c => c.id !== activeChatId))
+      setActiveChatId(null)
+      setChatView('list')
+      setContactProfile(null)
+    }).catch(err => alert(err.message))
+  }, [activeChatId])
+
+  const handleCreateGroupAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setCreateGroupAvatarFile(file)
+    const reader = new FileReader()
+    reader.onloadend = () => setCreateGroupAvatarPreview(reader.result as string)
+    reader.readAsDataURL(file)
+    e.target.value = ''
+  }
 
   const handleGroupAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>, chatId: number) => {
     const file = e.target.files?.[0]
@@ -1276,7 +1673,7 @@ function MobileApp() {
   const handleAiSend = async () => {
     const text = inputText.trim()
     if (!text || aiLoading) return
-    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const now = formatTime(new Date(), settings.timeFormat)
     setInputText('')
     setAiConversation(prev => [...prev, { role: 'user', text, time: now }])
     setAiLoading(true)
@@ -1305,6 +1702,13 @@ function MobileApp() {
     navigator.clipboard.writeText(value)
     setToastClosing(false)
     setToast(`${label} copied`)
+    setTimeout(() => setToastClosing(true), 1200)
+    setTimeout(() => { setToast(null); setToastClosing(false) }, 1500)
+  }
+
+  const showToast = (message: string) => {
+    setToastClosing(false)
+    setToast(message)
     setTimeout(() => setToastClosing(true), 1200)
     setTimeout(() => { setToast(null); setToastClosing(false) }, 1500)
   }
@@ -1352,6 +1756,27 @@ function MobileApp() {
       })
       setChatContextMenu(null)
     }).catch(err => alert(err.message))
+  }
+
+  const leaveChat = () => {
+    if (!chatContextMenu) return
+    const chat = chats.find(c => c.id === chatContextMenu.chatId)
+    if (!chat) return
+    setChatContextMenu(null)
+    openConfirm(
+      t('leaveGroup', settings.language),
+      t('leaveGroupConfirm', settings.language).replace('%s', chat.name),
+      () => {
+        api(`/chats/${chatContextMenu.chatId}/participants/${user?.id}`, { method: 'DELETE' }).then(() => {
+          setChats(prev => prev.filter(c => c.id !== chatContextMenu.chatId))
+          setChatInputTexts(prev => {
+            const next = { ...prev }
+            delete next[chatContextMenu.chatId]
+            return next
+          })
+        }).catch(err => alert(err.message))
+      }
+    )
   }
 
   const togglePinChat = (chatId: number) => {
@@ -1444,24 +1869,28 @@ function MobileApp() {
   const settingOptions: Record<string, string[]> = {
     lastSeen: ['Everyone', 'My Contacts', 'Nobody'],
     profilePhoto: ['Everyone', 'My Contacts', 'Nobody'],
+    addToGroup: ['Everyone', 'My Contacts', 'Nobody'],
     phonePrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     emailPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     bioPrivacy: ['Everyone', 'My Contacts', 'Nobody'],
     autoDownload: ['Wi-Fi only', 'Always', 'Never'],
     language: ['English', 'Russian'],
+    theme: ['Dark', 'Light'],
+    timeFormat: ['24h', '12h'],
   }
 
-  const cycleSetting = (key: keyof typeof settings, options: string[]) => {
-    setSettings(prev => {
-      const idx = options.indexOf(prev[key])
-      return { ...prev, [key]: options[(idx + 1) % options.length] }
+  const cycleSetting = (key: keyof typeof defaultSettings, options: string[]) => {
+    setSettings((prev: typeof defaultSettings) => {
+      const current = prev[key] as string
+      const idx = options.indexOf(current)
+      return { ...prev, [key]: options[(idx + 1) % options.length] } as typeof prev
     })
   }
 
   const selectSetting = (key: string, value: string) => {
-    setSettings(prev => {
+    setSettings((prev: typeof defaultSettings) => {
       const next = { ...prev, [key as keyof typeof prev]: value }
-      if (key === 'phonePrivacy' || key === 'emailPrivacy' || key === 'bioPrivacy' || key === 'profilePhoto' || key === 'lastSeen') {
+      if (key === 'phonePrivacy' || key === 'emailPrivacy' || key === 'bioPrivacy' || key === 'profilePhoto' || key === 'lastSeen' || key === 'addToGroup') {
         api('/users/me/privacy', {
           method: 'PUT',
           body: JSON.stringify({
@@ -1470,6 +1899,7 @@ function MobileApp() {
             bio: next.bioPrivacy,
             profilePhoto: next.profilePhoto,
             lastSeen: next.lastSeen,
+            addToGroup: next.addToGroup,
           })
         }).catch(console.error)
       }
@@ -1780,7 +2210,7 @@ function MobileApp() {
               <h1 className="mobile-chats-title" onClick={handleRefresh}><span className="mobile-chats-title-text">Surf</span></h1>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="mobile-header-btn" onClick={() => setCreateGroupOpen(true)}>
-                  <Users size={22} />
+                  <Plus size={22} />
                 </button>
                 <button className="mobile-header-btn" onClick={toggleSearch}>
                   <Search size={22} />
@@ -1901,7 +2331,7 @@ function MobileApp() {
                             <div className={`mobile-chat-preview${draftPreview ? ' is-draft' : ''}`}>{draftPreview || (chat.isGroup ? (chat.lastMessage || `${chat.participantCount || 0} ${t('members', settings.language)}`) : chat.lastMessage)}</div>
                           )}
                         </div>
-                        <div className="mobile-chat-time">{chat.time}</div>
+                        <div className="mobile-chat-time">{chat.time ? formatTime(chat.time, settings.timeFormat) : ''}</div>
                         {chat.pinned && <div className="mobile-chat-pin" />}
                       </div>
                       )
@@ -1930,10 +2360,12 @@ function MobileApp() {
                   {activeChat.isGroup ? (
                     <div className="mobile-thread-status">{activeChat.participantCount || 0} {t('members', settings.language)}</div>
                   ) : (() => {
-                    const lastSeen = (contactProfile || activeChat)?.lastSeen
+                    const lastSeen = contactProfile?.lastSeen ?? activeChat?.participantLastSeen
                     const online = contactProfile?.online ?? activeChat?.participantOnline
-                    const text = formatLastSeen(lastSeen, online, settings.language)
-                    return text ? <div className={`mobile-thread-status${online ? ' online' : ''}`}>{text}</div> : null
+                    const text = activeChat?.blocked
+                      ? t('wasLongAgo', settings.language)
+                      : (!online && !lastSeen ? t('wasRecently', settings.language) : formatLastSeen(lastSeen, online, settings.language))
+                    return <div className={`mobile-thread-status${online && !activeChat?.blocked ? ' online' : ''}`}>{text || <span style={{ visibility: 'hidden' }}>&nbsp;</span>}</div>
                   })()}
                 </div>
               </div>
@@ -1950,7 +2382,10 @@ function MobileApp() {
             {threadMenu && (
               <div className="context-menu" style={{ right: window.innerWidth - threadMenu.x, top: threadMenu.y, position: 'fixed', zIndex: 1000 }} onClick={(e) => e.stopPropagation()}>
                 {!clearChatSubmenu ? (
-                  <button className="context-menu-item" onClick={() => setClearChatSubmenu(true)}><Trash2 size={14} /><span>{t('clearChat', settings.language)}</span></button>
+                  <>
+                    <button className="context-menu-item" onClick={() => { openSearchPanel(); setThreadMenu(null); }}><Search size={14} /><span>{t('searchMessages', settings.language)}</span></button>
+                    <button className="context-menu-item" onClick={() => setClearChatSubmenu(true)}><Trash2 size={14} /><span>{t('clearChat', settings.language)}</span></button>
+                  </>
                 ) : (
                   <>
                     <button className="context-menu-item" onClick={() => { if (activeChatId) clearChat(activeChatId, false); setClearChatSubmenu(false) }}><User size={14} /><span>{t('clearForMe', settings.language)}</span></button>
@@ -1977,7 +2412,7 @@ function MobileApp() {
                       setContextMenu({ messageId: msg.id })
                     }}
                   >
-                    <div className="mobile-msg-bubble">
+                    <div className="mobile-msg-bubble" style={activeChat?.disableCopying ? { userSelect: 'none', WebkitUserSelect: 'none' } : undefined}>
                       {activeChat?.isGroup && msg.sender !== 'me' && msg.senderName && (
                         <div className="mobile-msg-sender-name">{msg.senderName}</div>
                       )}
@@ -2024,9 +2459,15 @@ function MobileApp() {
                           })()}
                         </div>
                       )}
+                      {msg.forwardFromName && (
+                        <div className="mobile-msg-forward-badge">
+                          <Forward size={12} />
+                          <span>{t('forwardedFrom', settings.language)} {msg.forwardFromName}</span>
+                        </div>
+                      )}
                       <div className="mobile-msg-text">{renderMessageText(msg.text)}</div>
                       <div className="mobile-msg-meta">
-                        <span className="mobile-msg-time">{msg.time}</span>
+                        <span className="mobile-msg-time">{formatTime(msg.time, settings.timeFormat)}</span>
                         {msg.sender === 'me' && <MessageStatusIcon status={msg.status} />}
                       </div>
                     </div>
@@ -2058,7 +2499,7 @@ function MobileApp() {
               )}
               {mentionMenu?.chatId === activeChat.id && (
                 <div className="mobile-mention-menu">
-                  {contacts
+                  {mentionableUsers
                     .filter(c => {
                       const q = mentionMenu.query
                       return c.username?.toLowerCase().includes(q) ||
@@ -2102,38 +2543,147 @@ function MobileApp() {
                 </div>
               )}
               <div className={`mobile-input-wrapper${replyTo ? ' has-reply' : ''}${pendingAttachments.length > 0 ? ' has-attachment' : ''}`}>
-                <button className="mobile-input-attach" onClick={() => setAttachMenu(true)}>
+                <button className="mobile-input-attach" onClick={() => setAttachMenu(true)} disabled={activeChat.blocked}>
                   <Plus size={22} />
                 </button>
                 <input
                   ref={el => void (chatInputRefs.current[activeChat.id] = el)}
                   type="text"
                   className="mobile-input"
-                  placeholder={t('writeMessage', settings.language)}
+                  placeholder={activeChat.blocked ? t('blockedInputPlaceholder', settings.language) : t('writeMessage', settings.language)}
                   value={chatInputTexts[activeChat.id] || ''}
                   onChange={(e) => handleChatInputChange(activeChat.id, e.target.value)}
                   onPaste={handleChatPaste}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleSendMessage(activeChat.id) }}
+                  disabled={activeChat.blocked}
                 />
                 <button
                   className={`mobile-send-btn${((chatInputTexts[activeChat.id] || '').trim() || pendingAttachments.length > 0) ? ' active' : ''}`}
                   onClick={() => handleSendMessage(activeChat.id)}
+                  disabled={activeChat.blocked}
                 >
                   <ArrowUp size={20} />
                 </button>
               </div>
             </div>
+            {(searchPanelOpen || searchPanelClosing) && (
+              <div className={`mobile-search-panel-overlay${searchPanelClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+                <div className="mobile-search-panel">
+                  <div className="mobile-search-panel-header">
+                    <Search size={20} className="mobile-search-panel-icon" />
+                    <input
+                      ref={searchMessagesInputRef}
+                      type="text"
+                      className="mobile-search-panel-input"
+                      placeholder={t('searchMessagesPlaceholder', settings.language)}
+                      value={searchMessagesQuery}
+                      onChange={(e) => setSearchMessagesQuery(e.target.value)}
+                    />
+                    <button className="mobile-search-panel-close" onClick={closeSearchPanel}><X size={20} /></button>
+                  </div>
+                  <div className="mobile-search-panel-results">
+                    {searchMessagesQuery.trim() ? (
+                      messages.filter(m => m.text.toLowerCase().includes(searchMessagesQuery.toLowerCase())).length > 0 ? (
+                        messages.filter(m => m.text.toLowerCase().includes(searchMessagesQuery.toLowerCase())).map(m => (
+                          <div key={m.id} className="mobile-search-result-item" onClick={() => {
+                            const el = document.getElementById(`msg-${m.id}`)
+                            if (el) {
+                              el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                              el.classList.add('search-highlight')
+                              setTimeout(() => el.classList.remove('search-highlight'), 2000)
+                            }
+                            closeSearchPanel()
+                          }}>
+                            <div className="mobile-search-result-text">
+                              {(() => {
+                                const text = m.text
+                                const query = searchMessagesQuery.toLowerCase()
+                                const idx = text.toLowerCase().indexOf(query)
+                                if (idx === -1) return text
+                                return (
+                                  <>
+                                    {text.slice(0, idx)}
+                                    <span className="search-highlight-text">{text.slice(idx, idx + query.length)}</span>
+                                    {text.slice(idx + query.length)}
+                                  </>
+                                )
+                              })()}
+                            </div>
+                            <div className="mobile-search-result-time">{formatTime(m.time, settings.timeFormat)}</div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="mobile-search-panel-empty">{t('noMessagesFound', settings.language)}</div>
+                      )
+                    ) : (
+                      <div className="mobile-search-panel-empty">{t('searchInChat', settings.language)}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {(forwardPickerOpen || forwardPickerClosing) && (
+              <div className={`mobile-forward-picker-overlay${forwardPickerClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+                <div className="mobile-forward-picker">
+                  <div className="mobile-forward-picker-header">
+                    <div className="mobile-forward-picker-title">{t('forwardTo', settings.language)}</div>
+                    <button className="mobile-forward-picker-close" onClick={closeForwardPicker}><X size={20} /></button>
+                  </div>
+                  <div className="mobile-forward-picker-search-wrapper">
+                    <Search size={16} className="mobile-forward-picker-search-icon" />
+                    <input
+                      type="text"
+                      className="mobile-forward-picker-search-input"
+                      placeholder={t('search', settings.language)}
+                      value={forwardSearchQuery}
+                      onChange={(e) => setForwardSearchQuery(e.target.value)}
+                    />
+                  </div>
+                  <div className="mobile-forward-picker-chats">
+                    {chats
+                      .filter(c => c.name.toLowerCase().includes(forwardSearchQuery.toLowerCase()))
+                      .map(chat => (
+                        <div key={chat.id} className="mobile-forward-picker-chat" onClick={() => {
+                          if (!forwardMessage) return
+                          const body: any = {
+                            text: forwardMessage.text,
+                            attachmentUrl: forwardMessage.attachmentUrl,
+                            attachmentType: forwardMessage.attachmentType,
+                            forwardFrom: forwardMessage.forwardFromId
+                              ? { id: forwardMessage.forwardFromId, name: forwardMessage.forwardFromName }
+                              : { id: forwardMessage.senderId, name: forwardMessage.senderName }
+                          }
+                          api(`/chats/${chat.id}/messages`, { method: 'POST', body: JSON.stringify(body) }).then(() => {
+                            closeForwardPicker()
+                          }).catch(err => alert(err.message))
+                        }}>
+                          <div className="mobile-forward-picker-chat-avatar" style={chat.avatar || chat.participantAvatar ? { backgroundImage: `url(${chat.avatar || chat.participantAvatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                            {!chat.avatar && !chat.participantAvatar && (chat.isGroup ? <Users size={18} strokeWidth={1.5} /> : <User size={18} strokeWidth={1.5} />)}
+                          </div>
+                          <div className="mobile-forward-picker-chat-info">
+                            <div className="mobile-forward-picker-chat-name">{chat.name}</div>
+                            <div className="mobile-forward-picker-chat-meta">{chat.isGroup ? `${chat.participantCount || 0} ${t('members', settings.language)}` : (chat.participantOnline ? t('online', settings.language) : t('lastSeenRecently', settings.language))}</div>
+                          </div>
+                        </div>
+                      ))}
+                    {chats.filter(c => c.name.toLowerCase().includes(forwardSearchQuery.toLowerCase())).length === 0 && (
+                      <div className="mobile-forward-picker-empty">{t('noChats', settings.language)}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {/* ===== CONTACT PROFILE (within chats tab) ===== */}
         {tab === 'chats' && chatView === 'contact' && (
           <div className={`mobile-contact-profile${closingContact ? ' closing' : ''}`}>
-            <div className="mobile-thread-header">
+            <div className="mobile-create-header">
               <button className="mobile-thread-back" onClick={handleCloseContact}>
                 <ChevronLeft size={24} />
               </button>
-              <div className="mobile-thread-name" style={{ flex: 1, textAlign: 'center' }}>{t('contact', settings.language)}</div>
+              <div className="mobile-create-title">{t('contact', settings.language)}</div>
               <div style={{ width: 44 }} />
             </div>
             <div className="mobile-profile-top">
@@ -2143,6 +2693,31 @@ function MobileApp() {
               </div>
               <div className="mobile-profile-name">{(viewedUser || contactProfile)?.name ? `${(viewedUser || contactProfile)!.name} ${(viewedUser || contactProfile)!.surname || ''}` : activeChat?.name || ''}</div>
               {(viewedUser || contactProfile)?.bio && <div className="mobile-profile-bio">{(viewedUser || contactProfile)?.bio}</div>}
+              {(() => {
+                const profileUser = viewedUser || contactProfile
+                const profileUserId = profileUser?.id
+                if (!profileUserId || profileUserId === user?.id) return null
+                const contact = isContact(profileUserId)
+                const blocked = isBlocked(profileUserId)
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+                    <button className="mobile-profile-add-btn wide" onClick={() => setContactConfirm({ action: contact ? 'delete' : 'add', userId: profileUserId, name: `${profileUser?.name || ''} ${profileUser?.surname || ''}`.trim() })}>
+                      {contact ? <UserMinus size={16} /> : <UserPlus size={16} />}
+                      <span>{contact ? t('deleteContact', settings.language) : t('addContact', settings.language)}</span>
+                    </button>
+                    <button className="mobile-profile-add-btn wide" onClick={() => setContactConfirm({ action: blocked ? 'unblock' : 'block', userId: profileUserId, name: `${profileUser?.name || ''} ${profileUser?.surname || ''}`.trim() })}>
+                      {blocked ? <ShieldOff size={16} /> : <Shield size={16} />}
+                      <span>{blocked ? t('unblock', settings.language) : t('block', settings.language)}</span>
+                    </button>
+                    {activeChatId && (
+                      <button className="mobile-profile-add-btn wide" onClick={() => setContactMoreOpen(true)}>
+                        <MoreVertical size={16} />
+                        <span>{t('more', settings.language)}</span>
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
             {(viewedUser || contactProfile) && (
               <div className="mobile-profile-section" style={{ paddingTop: 8 }}>
@@ -2354,6 +2929,28 @@ function MobileApp() {
               </div>
 
               <div className="mobile-settings-group">
+                <h3 className="mobile-settings-group-title">{t('appearance', settings.language)}</h3>
+                <div className="mobile-settings-card">
+                  <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('theme')}>
+                    <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#8E44AD' }}>
+                      <Palette size={18} />
+                    </div>
+                    <span className="mobile-settings-label">{t('theme', settings.language)}</span>
+                    <span className="mobile-settings-value">{t(settings.theme.toLowerCase(), settings.language)}</span>
+                    <ChevronRight size={16} className="mobile-settings-chevron" />
+                  </div>
+                  <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('timeFormat')}>
+                    <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#3287FE' }}>
+                      <Clock size={18} />
+                    </div>
+                    <span className="mobile-settings-label">{t('timeFormat', settings.language)}</span>
+                    <span className="mobile-settings-value">{t(settings.timeFormat === '12h' ? 'hour12' : 'hour24', settings.language)}</span>
+                    <ChevronRight size={16} className="mobile-settings-chevron" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="mobile-settings-group">
                 <h3 className="mobile-settings-group-title">{t('notifications', settings.language)}</h3>
                 <div className="mobile-settings-card">
                   <div className="mobile-settings-row">
@@ -2369,6 +2966,21 @@ function MobileApp() {
                     </div>
                     <span className="mobile-settings-label">{t('sounds', settings.language)}</span>
                     <ToggleSwitch checked={settings.sounds === 'On'} onChange={() => cycleSetting('sounds', ['On', 'Off'])} />
+                  </div>
+                  <div className="mobile-settings-row">
+                    <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#3287FE' }}>
+                      <Bell size={18} />
+                    </div>
+                    <span className="mobile-settings-label">{t('pushNotifications', settings.language)}</span>
+                    <ToggleSwitch checked={settings.pushNotifications} onChange={async () => {
+                      const next = !settings.pushNotifications
+                      setSettings((prev: typeof defaultSettings) => ({ ...prev, pushNotifications: next }))
+                      if (next) {
+                        await registerPush()
+                      } else {
+                        await unregisterPush()
+                      }
+                    }} />
                   </div>
                 </div>
               </div>
@@ -2412,6 +3024,14 @@ function MobileApp() {
                     <span className="mobile-settings-value">{p(settings.profilePhoto, settings.language)}</span>
                     <ChevronRight size={16} className="mobile-settings-chevron" />
                   </div>
+                  <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('addToGroup')}>
+                    <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#A855F7' }}>
+                      <Users size={18} />
+                    </div>
+                    <span className="mobile-settings-label">{t('addToGroup', settings.language)}</span>
+                    <span className="mobile-settings-value">{p(settings.addToGroup, settings.language)}</span>
+                    <ChevronRight size={16} className="mobile-settings-chevron" />
+                  </div>
                   <div className="mobile-settings-row clickable" onClick={() => setOptionPicker('phonePrivacy')}>
                     <div className="mobile-settings-icon-wrap" style={{ backgroundColor: '#F6BE11' }}>
                       <Phone size={18} />
@@ -2452,83 +3072,158 @@ function MobileApp() {
       </div>
 
       {createGroupOpen && (
-        <div className={`mobile-group-page${createGroupClosing ? ' closing' : ''}`} onClick={closeCreateGroup}>
-          <div className={`mobile-group-page-inner${createGroupClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
-            <div className="mobile-group-header">
-              <button className="mobile-thread-back" onClick={closeCreateGroup}><ChevronLeft size={24} /></button>
-              <div className="mobile-thread-name" style={{ flex: 1, textAlign: 'center' }}>{t('newGroup', settings.language)}</div>
-              <button
-                className="mobile-group-create-btn"
-                disabled={!createGroupName.trim() || createGroupSelected.length === 0}
-                onClick={handleCreateGroup}
-              >{t('create', settings.language)}</button>
+        <div className="mobile-group-page" onClick={closeCreateGroup}>
+          <div className="mobile-group-page-inner" onClick={e => e.stopPropagation()}>
+            <div className="mobile-create-header">
+              <button className="mobile-thread-back" onClick={() => createGroupStep === 'details' ? setCreateGroupStep('members') : closeCreateGroup()}><ChevronLeft size={24} /></button>
+              <div className="mobile-create-title">{t('newGroup', settings.language)}</div>
+              {createGroupStep === 'members' ? (
+                <button
+                  className="mobile-group-create-btn"
+                  disabled={createGroupSelected.length === 0}
+                  onClick={() => setCreateGroupStep('details')}
+                >{t('next', settings.language)}</button>
+              ) : (
+                <button
+                  className={`mobile-create-check ${!createGroupName.trim() ? 'disabled' : ''}`}
+                  disabled={!createGroupName.trim()}
+                  onClick={handleCreateGroup}
+                ><Check size={22} /></button>
+              )}
             </div>
-            <div style={{ padding: '0 16px 12px' }}>
-              <input
-                className="mobile-opus-input"
-                style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 12, padding: '12px 14px' }}
-                placeholder={t('groupName', settings.language)}
-                value={createGroupName}
-                onChange={e => setCreateGroupName(e.target.value)}
-                autoFocus
-              />
+            <div className="mobile-create-progress">
+              <div className={`mobile-create-progress-bar ${createGroupStep === 'members' || createGroupStep === 'details' ? 'active' : ''}`} />
+              <div className={`mobile-create-progress-bar ${createGroupStep === 'details' ? 'active' : ''}`} />
             </div>
-            <div className="mobile-group-section-title">{t('selectMembers', settings.language)}</div>
-            <div className="mobile-group-list">
-              {chats.filter(c => !c.isGroup && c.participantId && c.name !== 'Opus').map(contact => {
-                const selected = createGroupSelected.includes(contact.participantId!)
-                return (
-                  <button key={contact.participantId} className="mobile-group-member" onClick={() => {
-                    setCreateGroupSelected(prev => selected ? prev.filter(id => id !== contact.participantId) : [...prev, contact.participantId!])
-                  }}>
-                    <div className="mobile-chat-avatar" style={contact.participantAvatar ? { backgroundImage: `url(${contact.participantAvatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
-                      {!contact.participantAvatar && <User size={20} strokeWidth={1.5} />}
+            {createGroupStep === 'members' ? (() => {
+              const query = createGroupSearchQuery.trim().toLowerCase()
+              const listContacts = query
+                ? contacts.filter(c => `${c.name} ${c.surname || ''}`.trim().toLowerCase().includes(query)).sort((a, b) => a.name.localeCompare(b.name))
+                : contacts.slice().sort((a, b) => a.name.localeCompare(b.name))
+              const grouped = listContacts.reduce<Record<string, UserData[]>>((acc, c) => {
+                const letter = c.name.charAt(0).toUpperCase()
+                if (!acc[letter]) acc[letter] = []
+                acc[letter].push(c)
+                return acc
+              }, {})
+              const letters = Object.keys(grouped).sort()
+              const toggleContact = (id: number) => {
+                setCreateGroupSelected(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+              }
+              return (
+                <div className="mobile-create-members">
+                  <div className="mobile-create-search">
+                    <div className="mobile-search-input-wrapper">
+                      <Search size={18} className="mobile-search-icon" />
+                      <input
+                        type="text"
+                        className="mobile-search-input"
+                        placeholder={t('whoWouldYouLikeToAdd', settings.language)}
+                        value={createGroupSearchQuery}
+                        onChange={e => setCreateGroupSearchQuery(e.target.value)}
+                        autoFocus
+                      />
                     </div>
-                    <div className="mobile-chat-info" style={{ alignItems: 'flex-start' }}>
-                      <div className="mobile-chat-name">{contact.name}</div>
-                    </div>
-                    <div style={{ width: 22, height: 22, borderRadius: '50%', border: '2px solid #8c8c88', background: selected ? '#3287FE' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {selected && <Check size={14} color="#fff" />}
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
+                  </div>
+                  <div className="mobile-create-list">
+                    {letters.map(letter => (
+                      <div key={letter} className="mobile-create-letter-group">
+                        <div className="mobile-create-letter">{letter}</div>
+                        {grouped[letter].map(contact => {
+                          const selected = createGroupSelected.includes(contact.id)
+                          const displayName = `${contact.name} ${contact.surname || ''}`.trim()
+                          return (
+                            <button key={contact.id} className="mobile-create-contact" onClick={() => toggleContact(contact.id)}>
+                              <div className={`mobile-create-radio ${selected ? 'selected' : ''}`}>
+                                {selected && <Check size={12} strokeWidth={2.5} />}
+                              </div>
+                              <div className="mobile-chat-avatar mobile-create-avatar" style={contact.avatar ? { backgroundImage: `url(${contact.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                                {!contact.avatar && <User size={20} strokeWidth={1.5} />}
+                              </div>
+                              <div className="mobile-create-info">
+                                <div className="mobile-create-name">{displayName}</div>
+                                <div className={`mobile-create-status ${contact.online ? 'online' : ''}`}>
+                                  {contact.online ? t('online', settings.language) : (contact.lastSeen ? formatLastSeen(contact.lastSeen, contact.online, settings.language) : t('lastSeenRecently', settings.language))}
+                                </div>
+                              </div>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ))}
+                    {listContacts.length === 0 && (
+                      <div className="mobile-create-empty">{t('noUsersFound', settings.language)}</div>
+                    )}
+                  </div>
+                </div>
+              )
+            })() : (
+              <div className="mobile-create-details">
+                <input ref={createGroupAvatarInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleCreateGroupAvatarChange} />
+                <label className="mobile-create-avatar-placeholder" style={createGroupAvatarPreview ? { backgroundImage: `url(${createGroupAvatarPreview})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}} onClick={() => createGroupAvatarInputRef.current?.click()}>
+                  {!createGroupAvatarPreview && <Camera size={28} />}
+                </label>
+                <div className="mobile-create-fields">
+                  <div className="mobile-create-field">
+                    <label className="mobile-create-label">{t('groupName', settings.language)}</label>
+                    <input
+                      className="mobile-create-input"
+                      placeholder={t('writeSomething', settings.language)}
+                      value={createGroupName}
+                      onChange={e => setCreateGroupName(e.target.value)}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="mobile-create-toggle-row">
+                    <span className="mobile-create-toggle-label">{t('disableCopying', settings.language)}</span>
+                    <ToggleSwitch checked={createGroupDisableCopying} onChange={() => setCreateGroupDisableCopying(v => !v)} />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {groupInfoChatId && (
-        <div className="mobile-group-page" onClick={() => setGroupInfoChatId(null)}>
+        <div className="mobile-group-page no-animation" onClick={() => setGroupInfoChatId(null)}>
           <div className="mobile-group-page-inner" onClick={e => e.stopPropagation()}>
             {(() => {
               const chat = chats.find(c => c.id === groupInfoChatId)
               const isAdmin = chat?.role === 'admin'
               return (
                 <>
-                  <div className="mobile-thread-header">
+                  <div className="mobile-create-header">
                     <button className="mobile-thread-back" onClick={() => setGroupInfoChatId(null)}><ChevronLeft size={24} /></button>
-                    <div className="mobile-thread-name" style={{ flex: 1, textAlign: 'center' }}>{t('groupInfo', settings.language)}</div>
+                    <div className="mobile-create-title">{t('groupInfo', settings.language)}</div>
                     <div style={{ width: 44 }} />
                   </div>
-                  <div className="mobile-profile-top">
-                    <label className="mobile-profile-avatar group-avatar" style={chat?.avatar ? { backgroundImage: `url(${chat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent', cursor: isAdmin ? 'pointer' : 'default' } : { cursor: isAdmin ? 'pointer' : 'default' }}>
+                  <div className="mobile-group-top">
+                    <div className="mobile-profile-avatar group-avatar" style={chat?.avatar ? { backgroundImage: `url(${chat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent', cursor: 'pointer' } : { cursor: isAdmin ? 'pointer' : 'default' }} onClick={() => chat?.avatar ? setFullscreenAvatar(chat.avatar) : (isAdmin && groupInfoAvatarInputRef.current?.click())}>
                       {!chat?.avatar && <Users size={40} strokeWidth={1.5} />}
-                      {isAdmin && <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handleGroupAvatarChange(e, groupInfoChatId)} />}
+                      {isAdmin && <input ref={groupInfoAvatarInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={e => { handleGroupAvatarChange(e, groupInfoChatId); e.target.value = '' }} />}
                       {groupAvatarUploading && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', borderRadius: '50%' }}><Loader2 size={20} className="btn-spinner" /></div>}
-                    </label>
+                    </div>
                     <div className="mobile-profile-name">{chat?.name}</div>
                     {isAdmin && (
-                      <button className="mobile-group-add-btn" onClick={() => { setGroupInfoAddQuery(''); setGroupInfoAddResults([]); setAddMemberSheetOpen(true) }}>
-                        <Plus size={22} />
-                        <span>{t('add', settings.language)}</span>
-                      </button>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+                        <button className="mobile-profile-add-btn wide" onClick={() => { setGroupInfoAddQuery(''); setGroupInfoAddResults([]); setAddMemberSelected([]); setAddMemberSheetOpen(true) }}>
+                          <Plus size={16} />
+                          <span>{t('add', settings.language)}</span>
+                        </button>
+                        <button className="mobile-profile-add-btn wide" onClick={() => { setGroupEditName(chat?.name || ''); setGroupEditDisableCopying(!!chat?.disableCopying); setGroupEditOpen(true) }}>
+                          <Pencil size={16} />
+                          <span>{t('edit', settings.language)}</span>
+                        </button>
+                        <button className="mobile-profile-add-btn wide" onClick={() => setGroupInfoMoreOpen(true)}>
+                          <MoreVertical size={16} />
+                          <span>{t('more', settings.language)}</span>
+                        </button>
+                      </div>
                     )}
                   </div>
-                  <div className="mobile-profile-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                    <div className="mobile-profile-section-title">{t('members', settings.language)}</div>
-                    <div className="mobile-profile-card" style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                      <div className="mobile-group-list" style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
+                  <div className="mobile-group-section-title">{t('members', settings.language)}</div>
+                  <div className="mobile-group-list">
                     {groupParticipants.map(p => (
                       <div key={p.id} className="mobile-group-member" style={{ cursor: p.id === user?.id ? 'default' : 'pointer' }} onClick={() => { if (!p.username || p.id === user?.id) return; openChatWithUser(p.username); setGroupInfoChatId(null) }}>
                         <div className="mobile-chat-avatar" style={p.avatar ? { backgroundImage: `url(${p.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
@@ -2557,8 +3252,6 @@ function MobileApp() {
                       </div>
                     ))}
                   </div>
-                </div>
-              </div>
 
                 </>
               )
@@ -2567,40 +3260,315 @@ function MobileApp() {
         </div>
       )}
 
-      {/* ===== BOTTOM SHEET: Add Member ===== */}
-      {addMemberSheetOpen && (
-        <div className="mobile-sheet-overlay" onClick={() => setAddMemberSheetOpen(false)}>
-          <div className="mobile-sheet" onClick={e => e.stopPropagation()}>
-            <div className="mobile-sheet-handle" />
-            <div style={{ padding: '0 8px 12px' }}>
-              <input
-                ref={groupInfoAddInputRef}
-                className="mobile-opus-input"
-                style={{ background: 'rgba(255,255,255,0.06)', borderRadius: 12, padding: '12px 14px', width: '100%' }}
-                placeholder={t('searchUsers', settings.language)}
-                value={groupInfoAddQuery}
-                onChange={e => setGroupInfoAddQuery(e.target.value)}
-              />
+      {/* ===== GROUP INFO MORE ===== */}
+      {(groupInfoMoreOpen || groupInfoMoreClosing) && (() => {
+        const chat = chats.find(c => c.id === groupInfoChatId)
+        const isAdmin = chat?.role === 'admin'
+        return (
+          <div className={`mobile-sheet-overlay${groupInfoMoreClosing ? ' closing' : ''}`} onClick={closeGroupInfoMore}>
+            <div className={`mobile-sheet${groupInfoMoreClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+              <div className="mobile-sheet-handle" />
+              {isAdmin ? (
+                <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { handleDeleteGroup() }}>
+                  <Trash2 size={18} /><span>{t('deleteChat', settings.language)}</span>
+                </button>
+              ) : (
+                <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { handleLeaveGroup(); closeGroupInfoMore() }}>
+                  <LogOut size={18} /><span>{t('leaveGroup', settings.language)}</span>
+                </button>
+              )}
             </div>
-            {groupInfoAddResults.length > 0 && (
-              <div className="mobile-group-list" style={{ padding: '0 8px' }}>
-                {groupInfoAddResults.map(u => (
-                  <button key={u.id} className="mobile-group-member" onClick={() => { handleAddGroupMember(u.id); setAddMemberSheetOpen(false) }}>
-                    <div className="mobile-chat-avatar" style={u.avatar ? { backgroundImage: `url(${u.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
-                      {!u.avatar && <User size={20} strokeWidth={1.5} />}
-                    </div>
-                    <div className="mobile-chat-info" style={{ alignItems: 'flex-start' }}>
-                      <div className="mobile-chat-name">{u.name} {u.surname}</div>
-                      {u.username && <div className="mobile-chat-preview">@{u.username}</div>}
-                    </div>
-                    <Plus size={20} color="#3287FE" />
-                  </button>
-                ))}
-              </div>
-            )}
+          </div>
+        )
+      })()}
+
+      {/* ===== CONTACT MORE ===== */}
+      {(contactMoreOpen || contactMoreClosing) && (
+        <div className={`mobile-sheet-overlay${contactMoreClosing ? ' closing' : ''}`} onClick={closeContactMore}>
+          <div className={`mobile-sheet${contactMoreClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { handleDeleteContactChat(); closeContactMore() }}>
+              <Trash2 size={18} /><span>{t('deleteChat', settings.language)}</span>
+            </button>
           </div>
         </div>
       )}
+
+      {/* ===== ADD MEMBER PAGE ===== */}
+      {(addMemberSheetOpen || addMemberSheetClosing) && (
+        <div className={`mobile-group-page no-animation${addMemberSheetClosing ? ' closing' : ''}`} onClick={closeAddMemberSheet}>
+          <div className={`mobile-group-page-inner no-animation${addMemberSheetClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-group-header">
+              <button className="mobile-thread-back" onClick={closeAddMemberSheet}><ChevronLeft size={24} /></button>
+              <div className="mobile-thread-name" style={{ flex: 1, textAlign: 'center' }}>{t('addMember', settings.language)}</div>
+              <button
+                className="mobile-thread-back"
+                style={{ opacity: addMemberSelected.length > 0 ? 1 : 0.4 }}
+                disabled={addMemberSelected.length === 0}
+                onClick={() => {
+                  Promise.all(addMemberSelected.map(id => handleAddGroupMember(id))).then(closeAddMemberSheet)
+                }}
+              >
+                <Check size={22} />
+              </button>
+            </div>
+            <div style={{ padding: '12px 16px' }}>
+              <div className="mobile-search-input-wrapper">
+                <Search size={18} className="mobile-search-icon" />
+                <input
+                  ref={groupInfoAddInputRef}
+                  className="mobile-search-input"
+                  placeholder={t('searchUsers', settings.language)}
+                  value={groupInfoAddQuery}
+                  onChange={e => setGroupInfoAddQuery(e.target.value)}
+                />
+              </div>
+            </div>
+            {(() => {
+              const memberIds = new Set(groupParticipants.map(p => p.id))
+              const query = groupInfoAddQuery.trim().toLowerCase()
+              const source = query ? groupInfoAddResults : contacts
+              const filtered = source
+                .filter((u: UserData) => !memberIds.has(u.id))
+                .filter((u: UserData) => {
+                  if (!query) return true
+                  const fullName = `${u.name} ${u.surname || ''}`.toLowerCase()
+                  return fullName.includes(query) || u.username?.toLowerCase().includes(query)
+                })
+              const grouped = filtered.reduce<Record<string, UserData[]>>((acc, u) => {
+                const letter = (u.name[0] || '#').toUpperCase()
+                if (!acc[letter]) acc[letter] = []
+                acc[letter].push(u)
+                return acc
+              }, {})
+              const letters = Object.keys(grouped).sort()
+              return (
+                <div className="mobile-group-list mobile-add-member-list">
+                  <div
+                    onClick={() => openInviteLinkSheet()}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: '10px 0',
+                      marginBottom: 4,
+                      cursor: 'pointer',
+                      WebkitTapHighlightColor: 'transparent',
+                      outline: 'none',
+                      userSelect: 'none',
+                    }}
+                  >
+                    <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'rgba(50,135,254,0.09)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <Link size={18} color="#3287FE" strokeWidth={1.5} />
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+                      <div style={{ color: '#3287FE', fontWeight: 500, fontSize: 15 }}>{t('inviteViaLink', settings.language)}</div>
+                      <div style={{ color: '#8c8c88', fontSize: 13 }}>{t('linkExpiresIn', settings.language)}</div>
+                    </div>
+                    <ChevronRight size={18} color="#8c8c88" />
+                  </div>
+                  <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '0 0 8px' }} />
+                  {letters.map(letter => (
+                    <div key={letter}>
+                      <div className="mobile-add-member-letter">{letter}</div>
+                      {grouped[letter].map(u => {
+                        const selected = addMemberSelected.includes(u.id)
+                        const statusText = u.online ? t('online', settings.language) : formatLastSeen(u.lastSeen, u.online, settings.language)
+                        return (
+                          <button key={u.id} className="mobile-add-member-row" onClick={() => setAddMemberSelected(prev => selected ? prev.filter(id => id !== u.id) : [...prev, u.id])}>
+                            <div className={`mobile-add-member-checkbox${selected ? ' selected' : ''}`}>
+                              {selected && <Check size={14} color="#fff" />}
+                            </div>
+                            <div className="mobile-chat-avatar" style={u.avatar ? { backgroundImage: `url(${u.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}}>
+                              {!u.avatar && <User size={20} strokeWidth={1.5} />}
+                            </div>
+                            <div className="mobile-chat-info" style={{ alignItems: 'flex-start' }}>
+                              <div className="mobile-chat-name">{u.name} {u.surname}</div>
+                              {statusText && <div className={`mobile-add-member-status${u.online ? ' online' : ''}`}>{statusText}</div>}
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ))}
+                  {letters.length === 0 && (
+                    <div style={{ padding: '20px 0', textAlign: 'center', color: '#8c8c88', fontSize: 14 }}>{t('noUsersFound', settings.language)}</div>
+                  )}
+                </div>
+              )
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* ===== INVITE LINK SHEET ===== */}
+      {(inviteLinkSheetOpen || inviteLinkSheetClosing) && (
+        <div className={`mobile-sheet-overlay${inviteLinkSheetClosing ? ' closing' : ''}`} onClick={closeInviteLinkSheet} style={{ zIndex: 5000 }}>
+          <div className={`mobile-sheet${inviteLinkSheetClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, padding: '8px 0 24px' }}>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#3287FE15', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Link size={28} color="#3287FE" strokeWidth={1.5} />
+              </div>
+              <div style={{ textAlign: 'center', color: '#8c8c88', fontSize: 14, lineHeight: 1.4, padding: '0 20px' }}>
+                {t('inviteLinkSubtitle', settings.language)}
+              </div>
+              {inviteLinkLoading ? (
+                <Loader2 size={20} className="btn-spinner" style={{ margin: '12px 0' }} />
+              ) : inviteLinkCode ? (
+                <div style={{ width: 'calc(100% - 32px)', margin: '0 16px' }}>
+                  <button
+                    onClick={() => {
+                      const url = `${window.location.origin}/join/${inviteLinkCode}`
+                      navigator.clipboard.writeText(url).then(() => {
+                        showToast(t('linkCopied', settings.language))
+                      }).catch(() => {})
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '12px 16px',
+                      background: 'rgba(255,255,255,0.05)',
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      borderRadius: 12,
+                      color: '#fff',
+                      fontSize: 14,
+                      fontFamily: 'var(--font-sans)',
+                      wordBreak: 'break-all',
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                    }}
+                  >
+                    {`${window.location.origin}/join/${inviteLinkCode}`}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ color: '#8c8c88', fontSize: 14 }}>{t('requestFailed', settings.language)}</div>
+              )}
+              <div style={{ textAlign: 'center', color: '#8c8c88', fontSize: 13 }}>
+                {t('linkExpiresIn', settings.language)}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== INVITE JOIN PAGE ===== */}
+      {(inviteJoinOpen || inviteJoinClosing) && (
+        <div className={`mobile-group-page no-animation${inviteJoinClosing ? ' closing' : ''}`} onClick={closeInviteJoin}>
+          <div className={`mobile-group-page-inner no-animation${inviteJoinClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-group-header">
+              <button className="mobile-thread-back" onClick={closeInviteJoin}><ChevronLeft size={24} /></button>
+              <div className="mobile-thread-name" style={{ flex: 1, textAlign: 'center' }}>{t('joinGroup', settings.language)}</div>
+              <div style={{ width: 44 }} />
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20, padding: '0 24px' }}>
+              {inviteJoinLoading ? (
+                <Loader2 size={32} className="btn-spinner" />
+              ) : inviteJoinError ? (
+                <div style={{ textAlign: 'center', color: '#8c8c88', fontSize: 15 }}>{inviteJoinError}</div>
+              ) : inviteJoinPreview ? (
+                <>
+                  <div style={{ width: 88, height: 88, borderRadius: '50%', background: inviteJoinPreview.avatar ? `url(${inviteJoinPreview.avatar})` : '#3287FE20', backgroundSize: 'cover', backgroundPosition: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {!inviteJoinPreview.avatar && <Users size={36} color="#3287FE" strokeWidth={1.5} />}
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ color: '#fff', fontSize: 20, fontWeight: 600 }}>{inviteJoinPreview.name}</div>
+                    <div style={{ color: '#8c8c88', fontSize: 14, marginTop: 6 }}>
+                      {inviteJoinPreview.participantCount} {t('joinGroupMembers', settings.language)}
+                    </div>
+                    {inviteJoinPreview.adminName && (
+                      <div style={{ color: '#8c8c88', fontSize: 13, marginTop: 4 }}>
+                        {t('joinGroupAdmin', settings.language)}: {inviteJoinPreview.adminName}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    className="mobile-auth-btn"
+                    style={{ width: '100%', maxWidth: 280, marginTop: 12 }}
+                    onClick={handleAcceptInvite}
+                    disabled={inviteJoinLoading}
+                  >
+                    {inviteJoinLoading ? <Loader2 size={18} className="btn-spinner" /> : t('join', settings.language)}
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== CONFIRM DIALOG ===== */}
+      {(confirmDialog || confirmDialogClosing) && (
+        <div className={`mobile-sheet-overlay${confirmDialogClosing ? ' closing' : ''}`} onClick={closeConfirm} style={{ zIndex: 6000 }}>
+          <div className={`mobile-sheet${confirmDialogClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()} style={{ padding: '20px 20px 24px' }}>
+            <div style={{ textAlign: 'center', marginBottom: 20 }}>
+              <div style={{ color: '#fff', fontSize: 17, fontWeight: 600 }}>{confirmDialog?.title}</div>
+              {confirmDialog?.message && <div style={{ color: '#8c8c88', fontSize: 14, marginTop: 8 }}>{confirmDialog.message}</div>}
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="mobile-sheet-item" style={{ flex: 1, justifyContent: 'center', background: 'rgba(255,255,255,0.06)', borderRadius: 10 }} onClick={closeConfirm}>
+                {t('cancel', settings.language)}
+              </button>
+              <button className="mobile-sheet-item mobile-sheet-item-danger" style={{ flex: 1, justifyContent: 'center', borderRadius: 10 }} onClick={() => { confirmDialog?.onConfirm(); closeConfirm() }}>
+                {t('leaveGroup', settings.language)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== GROUP EDIT ===== */}
+      {groupEditOpen && groupInfoChatId && (() => {
+        const chat = chats.find(c => c.id === groupInfoChatId)
+        const canSave = groupEditName.trim().length > 0 && (groupEditName !== chat?.name || groupEditDisableCopying !== chat?.disableCopying)
+        return (
+        <div className="mobile-group-page" onClick={closeGroupEdit}>
+          <div className="mobile-group-page-inner" onClick={e => e.stopPropagation()}>
+            <div className="mobile-create-header">
+              <button className="mobile-thread-back" onClick={closeGroupEdit}><ChevronLeft size={24} /></button>
+              <div className="mobile-create-title">{t('editGroup', settings.language)}</div>
+              <button
+                className={`mobile-create-check ${!canSave ? 'disabled' : ''}`}
+                disabled={!canSave}
+                onClick={() => {
+                  const payload: any = { name: groupEditName }
+                  if (chat?.disableCopying !== groupEditDisableCopying) {
+                    payload.disableCopying = groupEditDisableCopying
+                  }
+                  api(`/chats/${groupInfoChatId}`, { method: 'PUT', body: JSON.stringify(payload) }).then(() => {
+                    setChats(prev => prev.map(c => c.id === groupInfoChatId ? { ...c, name: groupEditName.trim(), disableCopying: groupEditDisableCopying } : c))
+                    closeGroupEdit()
+                  }).catch(err => alert(err.message))
+                }}
+              ><Check size={22} /></button>
+            </div>
+            <div className="mobile-create-details">
+              <input ref={groupEditAvatarInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { handleGroupAvatarChange(e, groupInfoChatId!); e.target.value = '' }} />
+              <label className="mobile-create-avatar-placeholder" style={chat?.avatar ? { backgroundImage: `url(${chat.avatar})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundColor: 'transparent' } : {}} onClick={() => groupEditAvatarInputRef.current?.click()}>
+                {!chat?.avatar && <Camera size={28} />}
+                {groupAvatarUploading && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', borderRadius: '50%' }}><Loader2 size={20} className="btn-spinner" /></div>}
+              </label>
+              <div className="mobile-create-fields">
+                <div className="mobile-create-field">
+                  <label className="mobile-create-label">{t('groupName', settings.language)}</label>
+                  <input
+                    ref={groupEditInputRef}
+                    className="mobile-create-input"
+                    placeholder={t('groupName', settings.language)}
+                    value={groupEditName}
+                    onChange={e => setGroupEditName(e.target.value)}
+                    autoFocus
+                  />
+                </div>
+                <div className="mobile-create-toggle-row">
+                  <span className="mobile-create-toggle-label">{t('disableCopying', settings.language)}</span>
+                  <ToggleSwitch checked={groupEditDisableCopying} onChange={() => setGroupEditDisableCopying(v => !v)} />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )})()}
 
       {/* ===== BOTTOM TAB BAR ===== */}
       <div
@@ -2763,9 +3731,22 @@ function MobileApp() {
                 }}>
                   <Reply size={18} /><span>{t('reply', settings.language)}</span>
                 </button>
+                {!activeChat?.disableCopying && (
                 <button className="mobile-sheet-item" onClick={() => { copyMessage(); closeSheetImmediate() }}>
                   <Copy size={18} /><span>{t('copy', settings.language)}</span>
                 </button>
+                )}
+                {!activeChat?.disableCopying && (
+                <button className="mobile-sheet-item" onClick={() => {
+                  if (contextMenu) {
+                    const msg = messages.find(m => m.id === contextMenu.messageId)
+                    if (msg) openForwardPicker(msg)
+                  }
+                  closeSheetImmediate()
+                }}>
+                  <Forward size={18} /><span>{t('forward', settings.language)}</span>
+                </button>
+                )}
                 <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => setDeleteMessageSubmenu(true)}>
                   <Trash2 size={18} /><span>{t('delete', settings.language)}</span>
                 </button>
@@ -2799,9 +3780,16 @@ function MobileApp() {
                     <Folder size={18} /><span>{t('folder', settings.language)}</span>
                   </button>
                 )}
-                <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { deleteChat(); closeSheetImmediate() }}>
-                  <Trash2 size={18} /><span>{t('deleteChat', settings.language)}</span>
-                </button>
+                {(() => {
+                  const chat = chats.find(c => c.id === chatContextMenu.chatId)
+                  const isGroupMember = chat?.isGroup && chat?.role !== 'admin'
+                  return (
+                    <button className="mobile-sheet-item mobile-sheet-item-danger" onClick={() => { isGroupMember ? leaveChat() : deleteChat(); closeSheetImmediate() }}>
+                      {isGroupMember ? <LogOut size={18} /> : <Trash2 size={18} />}
+                      <span>{isGroupMember ? t('leaveGroup', settings.language) : t('deleteChat', settings.language)}</span>
+                    </button>
+                  )
+                })()}
               </>
             )}
           </div>
@@ -2855,7 +3843,7 @@ function MobileApp() {
                 onClick={() => { if (optionPicker) { selectSetting(optionPicker, option); closeSheetImmediate() } }}
                 style={optionPicker && (settings as any)[optionPicker] === option ? { color: '#ffffff' } : {}}
               >
-                <span style={{ flex: 1 }}>{p(option, settings.language)}</span>
+                <span style={{ flex: 1 }}>{optionPicker === 'timeFormat' ? t(option === '12h' ? 'hour12' : 'hour24', settings.language) : p(option, settings.language)}</span>
                 {optionPicker && (settings as any)[optionPicker] === option && <span style={{ color: '#ffffff' }}>✓</span>}
               </button>
             ))}
@@ -3086,6 +4074,12 @@ function MobileApp() {
         </div>
       )}
 
+      {fullscreenAvatar && (
+        <div className="mobile-fullscreen-overlay" onClick={() => setFullscreenAvatar(null)}>
+          <img src={fullscreenAvatar} className="mobile-fullscreen-avatar" alt="Avatar" />
+        </div>
+      )}
+
       {folderDialog && (
         <div className="dialog-overlay" onClick={() => setFolderDialog(null)}>
           <div className="dialog" onClick={e => e.stopPropagation()}>
@@ -3240,36 +4234,66 @@ function MobileApp() {
                   <span className="mobile-pro-feature-desc">{t('profileBadgeDesc', settings.language)}</span>
                 </div>
               </div>
+              <div className="mobile-pro-feature">
+                <div className="mobile-pro-feature-icon">
+                  <Sparkles size={22} strokeWidth={1.5} />
+                </div>
+                <div className="mobile-pro-feature-text">
+                  <span className="mobile-pro-feature-title">{t('advancedAiTools', settings.language)}</span>
+                  <span className="mobile-pro-feature-desc">{t('advancedAiToolsDesc', settings.language)}</span>
+                </div>
+              </div>
+              <div className="mobile-pro-feature">
+                <div className="mobile-pro-feature-icon">
+                  <Palette size={22} strokeWidth={1.5} />
+                </div>
+                <div className="mobile-pro-feature-text">
+                  <span className="mobile-pro-feature-title">{t('appearanceCustomization', settings.language)}</span>
+                  <span className="mobile-pro-feature-desc">{t('appearanceCustomizationDesc', settings.language)}</span>
+                </div>
+              </div>
             </div>
 
-            <button className="mobile-pro-features-link">
+            <button className="mobile-pro-features-link" onClick={() => setPlanFeaturesOpen(true)}>
               {t('viewAllPlanFeatures', settings.language)}
               <ChevronRight size={14} />
             </button>
           </div>
 
           <div className="mobile-pro-sheet">
-            {proPlans.length > 0 && proPlans.map((plan: Plan) => (
-              <label key={plan.id} className="mobile-pro-plan">
-                <input
-                  type="radio"
-                  name="pro-plan"
-                  value={plan.id}
-                  checked={proPlan === (plan.id === 1 ? 'monthly' : 'annual')}
-                  onChange={() => setProPlan(plan.id === 1 ? 'monthly' : 'annual')}
-                />
-                <span className="mobile-pro-radio" />
-                <span className="mobile-pro-plan-text">
-                  <span className="mobile-pro-plan-name">
-                    {plan.id === 1 ? t('monthByMonth', settings.language) : t('annualSubscription', settings.language)}:{' '}
-                    <span className="mobile-pro-plan-price">{plan.price_rub.toLocaleString()} ₽</span>
-                  </span>
-                  {plan.id === 2 && (
-                    <span className="mobile-pro-plan-hint">{t('onlyPerMonth', settings.language)}</span>
-                  )}
+            <label className="mobile-pro-plan">
+              <input
+                type="radio"
+                name="pro-plan"
+                value={1}
+                checked={proPlan === 'monthly'}
+                onChange={() => setProPlan('monthly')}
+              />
+              <span className="mobile-pro-radio" />
+              <span className="mobile-pro-plan-text">
+                <span className="mobile-pro-plan-name">
+                  {t('monthByMonth', settings.language)}:{' '}
+                  <span className="mobile-pro-plan-price">150 ₽</span>
                 </span>
-              </label>
-            ))}
+              </span>
+            </label>
+            <label className="mobile-pro-plan">
+              <input
+                type="radio"
+                name="pro-plan"
+                value={2}
+                checked={proPlan === 'annual'}
+                onChange={() => setProPlan('annual')}
+              />
+              <span className="mobile-pro-radio" />
+              <span className="mobile-pro-plan-text">
+                <span className="mobile-pro-plan-name">
+                  {t('annualSubscription', settings.language)}:{' '}
+                  <span className="mobile-pro-plan-price">1,299 ₽</span>
+                </span>
+                <span className="mobile-pro-plan-hint">{t('onlyPerMonth', settings.language)}</span>
+              </span>
+            </label>
 
             <button
               className={`mobile-pro-upgrade-btn${upgradeLoading ? ' loading' : ''}`}
@@ -3299,6 +4323,70 @@ function MobileApp() {
               <button className="mobile-pro-legal-link" onClick={() => setPageStack(prev => [...prev, 'offer'])}>{t('termsOfService', settings.language)}</button>
               <span>·</span>
               <button className="mobile-pro-legal-link" onClick={() => setPageStack(prev => [...prev, 'contacts'])}>{t('contactsTitle', settings.language)}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== BOTTOM SHEET: Plan Features ===== */}
+      {(planFeaturesOpen || closingSheet === 'planFeatures') && (
+        <div className={`mobile-sheet-overlay${closingSheet === 'planFeatures' ? ' closing' : ''}`} style={{ zIndex: 4001 }} onClick={() => closeSheet('planFeatures')}>
+          <div className={`mobile-sheet mobile-pro-features-sheet${closingSheet === 'planFeatures' ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <div className="mobile-sheet-handle" />
+            <div className="mobile-pro-features-sheet-header">
+              <h3>{t('planFeatures', settings.language)}</h3>
+              <button className="mobile-pro-features-sheet-close" onClick={() => closeSheet('planFeatures')}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="mobile-pro-features-sheet-list">
+              <div className="mobile-pro-features-sheet-item">
+                <div className="mobile-pro-features-sheet-icon">
+                  <svg width={22} height={20} style={{ display: 'block' }}>
+                    <use href="/icons.svg#opus-pro-icon" />
+                  </svg>
+                </div>
+                <div className="mobile-pro-features-sheet-text">
+                  <span className="mobile-pro-features-sheet-title">{t('opusInChats', settings.language)}</span>
+                  <span className="mobile-pro-features-sheet-desc">{t('opusInChatsDetail', settings.language)}</span>
+                </div>
+              </div>
+              <div className="mobile-pro-features-sheet-item">
+                <div className="mobile-pro-features-sheet-icon">
+                  <Cloud size={22} strokeWidth={1.5} />
+                </div>
+                <div className="mobile-pro-features-sheet-text">
+                  <span className="mobile-pro-features-sheet-title">{t('doubledLimits', settings.language)}</span>
+                  <span className="mobile-pro-features-sheet-desc">{t('doubledLimitsDetail', settings.language)}</span>
+                </div>
+              </div>
+              <div className="mobile-pro-features-sheet-item">
+                <div className="mobile-pro-features-sheet-icon">
+                  <BadgeCheck size={22} strokeWidth={1.5} />
+                </div>
+                <div className="mobile-pro-features-sheet-text">
+                  <span className="mobile-pro-features-sheet-title">{t('profileBadge', settings.language)}</span>
+                  <span className="mobile-pro-features-sheet-desc">{t('profileBadgeDetail', settings.language)}</span>
+                </div>
+              </div>
+              <div className="mobile-pro-features-sheet-item">
+                <div className="mobile-pro-features-sheet-icon">
+                  <Sparkles size={22} strokeWidth={1.5} />
+                </div>
+                <div className="mobile-pro-features-sheet-text">
+                  <span className="mobile-pro-features-sheet-title">{t('advancedAiTools', settings.language)}</span>
+                  <span className="mobile-pro-features-sheet-desc">{t('advancedAiToolsDetail', settings.language)}</span>
+                </div>
+              </div>
+              <div className="mobile-pro-features-sheet-item">
+                <div className="mobile-pro-features-sheet-icon">
+                  <Palette size={22} strokeWidth={1.5} />
+                </div>
+                <div className="mobile-pro-features-sheet-text">
+                  <span className="mobile-pro-features-sheet-title">{t('appearanceCustomization', settings.language)}</span>
+                  <span className="mobile-pro-features-sheet-desc">{t('appearanceCustomizationDetail', settings.language)}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -3341,6 +4429,37 @@ function MobileApp() {
           setPageStack(prev => prev.filter(p => p !== 'contacts'))
           window.history.replaceState(null, '', window.location.origin)
         }} />
+      )}
+
+      {(contactConfirm || contactConfirmClosing) && (
+        <div className={`delete-folder-overlay${contactConfirmClosing ? ' closing' : ''}`} onClick={closeContactConfirm}>
+          <div className={`delete-folder-dialog${contactConfirmClosing ? ' closing' : ''}`} onClick={e => e.stopPropagation()}>
+            <h2 className="delete-folder-title">
+              {contactConfirm?.action === 'add'
+                ? t('addContactConfirm', settings.language).replace('%s', contactConfirm?.name || '')
+                : contactConfirm?.action === 'delete'
+                ? t('deleteContactConfirm', settings.language).replace('%s', contactConfirm?.name || '')
+                : contactConfirm?.action === 'block'
+                ? t('blockConfirm', settings.language).replace('%s', contactConfirm?.name || '')
+                : t('unblockConfirm', settings.language).replace('%s', contactConfirm?.name || '')}
+            </h2>
+            <div className="delete-folder-actions">
+              <button className="delete-folder-btn cancel" onClick={closeContactConfirm}>{t('cancel', settings.language)}</button>
+              <button
+                className={`delete-folder-btn ${contactConfirm?.action === 'add' || contactConfirm?.action === 'unblock' ? 'primary' : 'danger'}`}
+                onClick={confirmContactAction}
+              >
+                {contactConfirm?.action === 'add'
+                  ? t('add', settings.language)
+                  : contactConfirm?.action === 'delete'
+                  ? t('delete', settings.language)
+                  : contactConfirm?.action === 'block'
+                  ? t('block', settings.language)
+                  : t('unblock', settings.language)}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {toast && <div className={`toast${toastClosing ? ' closing' : ''}`}>{toast}</div>}

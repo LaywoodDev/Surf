@@ -5,18 +5,18 @@ import { authMiddleware, AuthRequest } from '../middleware/auth'
 const router = Router()
 router.use(authMiddleware)
 
-export const PROXYAPI_KEY = process.env.PROXYAPI_KEY || ''
-const PROXYAPI_BASE = 'https://api.proxyapi.ru/openai/v1'
+export const KIMI_API_KEY = process.env.KIMI_API_KEY || ''
+const KIMI_API_BASE = 'https://api.moonshot.cn/v1'
 
 export async function callAI(messages: { role: string; content: string }[]) {
-  const response = await fetch(`${PROXYAPI_BASE}/chat/completions`, {
+  const response = await fetch(`${KIMI_API_BASE}/chat/completions`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${PROXYAPI_KEY}`,
+      'Authorization': `Bearer ${KIMI_API_KEY}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'gpt-4o',
+      model: 'kimi-latest',
       messages,
       temperature: 0.7,
     }),
@@ -55,8 +55,8 @@ router.post('/process', async (req: AuthRequest, res: Response) => {
     }
   }
 
-  if (!PROXYAPI_KEY) {
-    res.status(500).json({ error: 'PROXYAPI_KEY not configured on server' })
+  if (!KIMI_API_KEY) {
+    res.status(500).json({ error: 'KIMI_API_KEY not configured on server' })
     return
   }
 

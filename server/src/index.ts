@@ -12,6 +12,7 @@ import usersRoutes from './routes/users'
 import aiRoutes from './routes/ai'
 import pollsRoutes from './routes/polls'
 import subscriptionRoutes from './routes/subscriptions'
+import pushRoutes from './routes/push'
 import { authMiddleware } from './middleware/auth'
 import db from './db'
 
@@ -87,6 +88,7 @@ app.use('/api/users', usersRoutes)
 app.use('/api/ai', aiRoutes)
 app.use('/api/polls', pollsRoutes)
 app.use('/api/subscription', subscriptionRoutes)
+app.use('/api/push', pushRoutes)
 app.post('/api/webhook/yookassa', (req, res) => {
   res.status(200).send('OK')
 })
